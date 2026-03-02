@@ -1,0 +1,10 @@
+build/
+sdkconfig
+sdkconfig.old
+dist
+.DS_Store
+dependencies.lock
+CMakeLists.update_example.txt
+.cache
+.devcontainer
+img/js.bin

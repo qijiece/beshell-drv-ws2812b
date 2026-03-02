@@ -1,0 +1,18 @@
+name: "beshell-drv-ws2812b"
+version: "1.0.0"
+description: "WS2812B driver for BeShell"
+keywords:
+  - "JavaScript"
+  - "QuickJS"
+  - "WS2812B"
+  - "LED"
+authors:
+  - "alee201@163.com"
+homepage: "https://beshell.become.cool"
+url: "https://beshell.become.cool"
+repository: "https://github.com/become-cool/beshell-drv-ws2812b.git"
+license: "LGPL"
+dependencies:
+  "become-cool/beshell":
+    version: ">=1.0.8"
+
