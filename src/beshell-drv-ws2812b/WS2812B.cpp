@@ -107,8 +107,10 @@ namespace be::driver::light{
      * @class WS2812B
      * @method setup
      * @param config:object 配置对象
-     * @param config.pin:number 数据引脚 GPIO 号
-     * @param config.length:number LED 数量（1-1024）
+     *     {
+     *         pin: number,           // 数据引脚 GPIO 号
+     *         length: number         // LED 数量（1-1024）
+     *     }
      * @return undefined
      * @throws LED 数量必须在 1-1024 范围内
      * @throws LED 灯带初始化失败
