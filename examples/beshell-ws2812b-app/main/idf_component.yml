@@ -1,0 +1,3 @@
+dependencies:
+  become-cool/beshell: '>=1.0.8'
+  become-cool/beshell-drv-ws2812b: '>=1.0.0'

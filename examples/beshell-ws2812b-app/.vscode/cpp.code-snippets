@@ -1,0 +1,48 @@
+{
+    "BeShell Native Module": {
+        "prefix": "beshell-module",
+        "description": "Create a BeShell native module",
+        "body": [
+            "#include <beshell/NativeModule.hpp>",
+            "",
+            "using namespace be ;",
+            "",
+            "class ${1:MyModule} : public NativeModule {",
+            "public:",
+            "    ${1:MyModule}(JSContext * ctx, const char * name)",
+            "        : NativeModule(ctx, name, 0) {",
+            "        ",
+            "    }",
+            "",
+            "    static void use(BeShell * beshell) {",
+            "        beshell->use<${1:MyModule}>() ;",
+            "    }",
+            "",
+            "    void exports(JSContext *ctx) {",
+            "        $0",
+            "    }",
+            "} ;",
+            ""
+        ]
+    },
+    "WS2812B Setup": {
+        "prefix": "ws2812b-setup",
+        "description": "Initialize WS2812B LED strip",
+        "body": [
+            "import { WS2812B } from \"ws2812b\"",
+            "",
+            "let strip = new WS2812B()",
+            "strip.setup({",
+            "    pin: ${1:8},",
+            "    length: ${2:16}",
+            "})"
+        ]
+    },
+    "WS2812B Set Pixel": {
+        "prefix": "ws2812b-pixel",
+        "description": "Set WS2812B pixel color",
+        "body": [
+            "strip.setPixel(${1:index}, ${2:r}, ${3:g}, ${4:b})"
+        ]
+    }
+}

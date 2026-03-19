@@ -6,6 +6,18 @@
 
 
 namespace be::driver::light{
+    /**
+     * WS2812B LED 灯带驱动类
+     * 
+     * 用于控制 WS2812B 全彩 LED 灯带，支持设置单个像素颜色、清空灯带和刷新显示。
+     * 使用 RMT 硬件模块实现精确的时序控制。
+     *
+     * @component beshell-drv-ws2812b
+     *
+     * @class WS2812B
+     * @module ws2812b
+     * @extends NativeClass
+     */
     class WS2812B: public be::NativeClass {
         DECLARE_NCLASS_META
     private:

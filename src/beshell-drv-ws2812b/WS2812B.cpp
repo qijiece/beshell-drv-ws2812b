@@ -7,6 +7,45 @@
 using namespace std ;
 
 namespace be::driver::light{
+    /**
+     * WS2812B LED 灯带驱动类
+     * 
+     * 用于控制 WS2812B 全彩 LED 灯带，支持设置单个像素颜色、清空灯带和刷新显示。
+     * 使用 RMT 硬件模块实现精确的时序控制。
+     * 
+     * 示例：
+     * ```javascript
+     * import { WS2812B } from "ws2812b"
+     * 
+     * // 创建 WS2812B 实例（30个LED）
+     * const strip = new WS2812B()
+     * 
+     * // 初始化配置
+     * strip.setup({
+     *     pin: 18,    // 数据引脚
+     *     length: 30  // LED 数量
+     * })
+     * 
+     * // 设置第一个 LED 为红色
+     * strip.setPixel(0, 255, 0, 0)
+     * 
+     * // 设置第二个 LED 为绿色
+     * strip.setPixel(1, 0, 255, 0)
+     * 
+     * // 刷新显示（将数据发送到灯带）
+     * strip.flush()
+     * 
+     * // 清空灯带（所有 LED 熄灭）
+     * strip.clear()
+     * strip.flush()
+     * ```
+     *
+     * @component beshell-drv-ws2812b
+     *
+     * @class WS2812B
+     * @module ws2812b
+     * @extends NativeClass
+     */
     DEFINE_NCLASS_META(WS2812B, NativeClass)
     std::vector<JSCFunctionListEntry> WS2812B::methods = {
         JS_CFUNC_DEF("setup", 1, WS2812B::setup),
@@ -26,12 +65,54 @@ namespace be::driver::light{
         }
     }
 
+    /**
+     * 构造函数
+     * 
+     * 创建一个新的 WS2812B 实例。
+     *
+     * @component beshell-drv-ws2812b
+     *
+     * @module ws2812b
+     * @class WS2812B
+     * @method constructor
+     * @return WS2812B 返回 WS2812B 实例
+     */
     JSValue WS2812B::constructor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
         auto obj = new WS2812B(ctx) ;
         obj->shared() ;
         return obj->jsobj ;
     }
 
+    /**
+     * 初始化 WS2812B LED 灯带
+     * 
+     * 配置 LED 灯带的数据引脚和 LED 数量。
+     * 
+     * 配置参数说明：
+     * - pin: 连接 LED 灯带数据线的 GPIO 引脚号
+     * - length: LED 灯带上的 LED 数量（1-1024）
+     * 
+     * 示例：
+     * ```javascript
+     * // 基本配置
+     * strip.setup({
+     *     pin: 18,
+     *     length: 30
+     * })
+     * ```
+     *
+     * @component beshell-drv-ws2812b
+     *
+     * @module ws2812b
+     * @class WS2812B
+     * @method setup
+     * @param config:object 配置对象
+     * @param config.pin:number 数据引脚 GPIO 号
+     * @param config.length:number LED 数量（1-1024）
+     * @return undefined
+     * @throws LED 数量必须在 1-1024 范围内
+     * @throws LED 灯带初始化失败
+     */
     JSValue WS2812B::setup(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
         THIS_NCLASS(WS2812B, that)
         CHECK_ARGC(1)
@@ -74,6 +155,46 @@ namespace be::driver::light{
     }
 
     
+    /**
+     * 设置单个像素的颜色
+     * 
+     * 设置指定索引位置的 LED 颜色。颜色值使用 RGB 格式，每个通道范围为 0-255。
+     * 注意：调用此方法后需要调用 flush() 才能将颜色数据发送到灯带。
+     * 
+     * 示例：
+     * ```javascript
+     * // 设置第 0 个 LED 为红色
+     * strip.setPixel(0, 255, 0, 0)
+     * 
+     * // 设置第 1 个 LED 为绿色
+     * strip.setPixel(1, 0, 255, 0)
+     * 
+     * // 设置第 2 个 LED 为蓝色
+     * strip.setPixel(2, 0, 0, 255)
+     * 
+     * // 设置第 3 个 LED 为白色（低亮度）
+     * strip.setPixel(3, 50, 50, 50)
+     * 
+     * // 刷新显示
+     * strip.flush()
+     * ```
+     *
+     * @component beshell-drv-ws2812b
+     *
+     * @module ws2812b
+     * @class WS2812B
+     * @method setPixel
+     * @param idx:number 像素索引（从 0 开始）
+     * @param red:number 红色通道值（0-255）
+     * @param green:number 绿色通道值（0-255）
+     * @param blue:number 蓝色通道值（0-255）
+     * @return undefined
+     * @throws 请先调用 setup()
+     * @throws 无效的像素索引
+     * @throws 无效的红色值
+     * @throws 无效的绿色值
+     * @throws 无效的蓝色值
+     */
     JSValue WS2812B::setPixel(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
         THIS_NCLASS(WS2812B, that)
         CHECK_ARGC(4)
@@ -100,6 +221,29 @@ namespace be::driver::light{
         return JS_UNDEFINED ;
     }
     
+    /**
+     * 清空灯带
+     * 
+     * 将所有 LED 的颜色设置为关闭（黑色）。
+     * 注意：调用此方法后需要调用 flush() 才能将数据发送到灯带。
+     * 
+     * 示例：
+     * ```javascript
+     * // 清空灯带
+     * strip.clear()
+     * 
+     * // 刷新显示
+     * strip.flush()
+     * ```
+     *
+     * @component beshell-drv-ws2812b
+     *
+     * @module ws2812b
+     * @class WS2812B
+     * @method clear
+     * @return undefined
+     * @throws 请先调用 setup()
+     */
     JSValue WS2812B::clear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
         THIS_NCLASS(WS2812B, that)
         if(!that->led_strip) {
@@ -109,6 +253,30 @@ namespace be::driver::light{
         return JS_UNDEFINED ;
     }
     
+    /**
+     * 刷新显示
+     * 
+     * 将设置的颜色数据发送到 LED 灯带。在调用 setPixel() 或 clear() 后，
+     * 必须调用此方法才能将更改应用到实际的 LED 灯带上。
+     * 
+     * 示例：
+     * ```javascript
+     * // 设置颜色
+     * strip.setPixel(0, 255, 0, 0)
+     * strip.setPixel(1, 0, 255, 0)
+     * 
+     * // 刷新显示（必须调用）
+     * strip.flush()
+     * ```
+     *
+     * @component beshell-drv-ws2812b
+     *
+     * @module ws2812b
+     * @class WS2812B
+     * @method flush
+     * @return undefined
+     * @throws 请先调用 setup()
+     */
     JSValue WS2812B::flush(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
         THIS_NCLASS(WS2812B, that)
         if(!that->led_strip) {

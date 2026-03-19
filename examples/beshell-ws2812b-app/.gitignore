@@ -1,0 +1,6 @@
+build/
+managed_components/
+js.bin
+sdkconfig
+sdkconfig.old
+CMakeLists.private.txt
