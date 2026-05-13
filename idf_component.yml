@@ -1,5 +1,5 @@
 name: "beshell-drv-ws2812b"
-version: "1.0.0"
+version: "1.0.1"
 description: "WS2812B driver for BeShell"
 keywords:
   - "JavaScript"
@@ -14,5 +14,5 @@ repository: "https://github.com/become-cool/beshell-drv-ws2812b.git"
 license: "LGPL"
 dependencies:
   "become-cool/beshell":
-    version: ">=1.0.8"
+    version: ">=1.0.11"
 

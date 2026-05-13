@@ -2,23 +2,23 @@ cmake_minimum_required(VERSION 3.24)
 
 
 # 源码目录
-file(GLOB_RECURSE src_beshell_drv_ws2812b
-        src/beshell-drv-ws2812b/*.c
-        src/beshell-drv-ws2812b/*.cpp
+file(GLOB_RECURSE src_beshell_component
+        src/beshell/drv/ws2812b/*.c
+        src/beshell/drv/ws2812b/*.cpp
     )
 
 
 
 idf_component_register(
         SRCS
-            ${src_beshell_drv_ws2812b}
+            ${src_beshell_component}
         INCLUDE_DIRS 
             ./src
         PRIV_REQUIRES
             beshell
 )
 
-target_include_directories(${COMPONENT_LIB} PRIVATE src/beshell-drv-ws2812b)
+target_include_directories(${COMPONENT_LIB} PRIVATE src/beshell/drv/ws2812b)
 
 set(CMAKE_CXX_STANDARD 11)
 
