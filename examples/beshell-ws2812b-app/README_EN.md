@@ -108,9 +108,9 @@ run /example/rainbow.js
 ### Basic Control
 
 ```javascript
-import { WS2812B } from "ws2812b"
+import { Strip } from "ws2812b"
 
-let strip = new WS2812B()
+let strip = new Strip()
 strip.setup({
     pin: 8,
     length: 16
@@ -170,10 +170,10 @@ while (true) {
 
 ## API Reference
 
-### WS2812B Class
+### Strip Class
 
 #### constructor()
-Create a WS2812B object.
+Create a Strip object.
 
 #### setup(config)
 Initialize the LED strip.

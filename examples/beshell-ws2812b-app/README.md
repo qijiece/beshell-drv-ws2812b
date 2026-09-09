@@ -108,9 +108,9 @@ run /example/rainbow.js
 ### 基础控制
 
 ```javascript
-import { WS2812B } from "ws2812b"
+import { Strip } from "ws2812b"
 
-let strip = new WS2812B()
+let strip = new Strip()
 strip.setup({
     pin: 8,
     length: 16
@@ -170,10 +170,10 @@ while (true) {
 
 ## API 参考
 
-### WS2812B 类
+### Strip 类
 
 #### constructor()
-创建 WS2812B 对象。
+创建 Strip 对象。
 
 #### setup(config)
 初始化 LED 灯带。

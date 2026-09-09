@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <beshell/BeShell.hpp>
-#include <beshell-drv-ws2812b/WS2812B.hpp>
+#include <beshell/driver/ws2812b/WS2812B.hpp>
 
 using namespace std ;
 using namespace be ;
-using namespace be::driver::light ;
+using namespace be::driver::ws2812b ;
 
 
 #ifdef __cplusplus
@@ -20,7 +20,7 @@ void app_main(void)
     beshell.use<Serial>() ;
     beshell.use<NVS>() ;
     
-    // 启用 WS2812B 驱动模块
+    // 启用 ws2812b 驱动模块（级联注册 Strip / Section / Rainbow）
     beshell.use<WS2812B>() ;
 
     // 挂载 js 分区到文件的根目录

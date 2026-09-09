@@ -1,4 +1,4 @@
-import { WS2812B } from "ws2812b"
+import { Strip } from "ws2812b"
 
 // LED 配置
 const LED_PIN = 8           // GPIO 引脚 (根据你的硬件修改)
@@ -8,7 +8,7 @@ async function main() {
     console.log("\n=== WS2812B Basic Control Example ===\n")
     
     // 创建 WS2812B 对象
-    let strip = new WS2812B()
+    let strip = new Strip()
     
     // 初始化 LED 灯带
     console.log(`Initializing ${LED_COUNT} LEDs on GPIO ${LED_PIN}...`)

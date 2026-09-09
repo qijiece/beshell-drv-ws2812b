@@ -29,9 +29,9 @@
         "prefix": "ws2812b-setup",
         "description": "Initialize WS2812B LED strip",
         "body": [
-            "import { WS2812B } from \"ws2812b\"",
+            "import { Strip } from \"ws2812b\"",
             "",
-            "let strip = new WS2812B()",
+            "let strip = new Strip()",
             "strip.setup({",
             "    pin: ${1:8},",
             "    length: ${2:16}",

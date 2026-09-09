@@ -3,9 +3,12 @@ cmake_minimum_required(VERSION 3.24)
 
 # 源码目录
 file(GLOB_RECURSE src_beshell_component
-        src/beshell/drv/ws2812b/*.c
-        src/beshell/drv/ws2812b/*.cpp
+        src/beshell/driver/ws2812b/*.c
+        src/beshell/driver/ws2812b/*.cpp
     )
+
+# js/ 下的 .c 是 JS 胶水层生成的内嵌字节数组，已被对应模块 .cpp #include，不参与独立编译
+list(FILTER src_beshell_component EXCLUDE REGEX ".*/js/.*\\.c$")
 
 
 
@@ -18,7 +21,7 @@ idf_component_register(
             beshell
 )
 
-target_include_directories(${COMPONENT_LIB} PRIVATE src/beshell/drv/ws2812b)
+target_include_directories(${COMPONENT_LIB} PRIVATE src/beshell/driver/ws2812b)
 
 set(CMAKE_CXX_STANDARD 11)
 

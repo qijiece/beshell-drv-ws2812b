@@ -1,4 +1,4 @@
-import { WS2812B } from "ws2812b"
+import { Strip } from "ws2812b"
 
 // LED 配置
 const LED_PIN = 8
@@ -20,7 +20,7 @@ function lerpColor(color1, color2, t) {
 async function main() {
     console.log("\n=== WS2812B Color Gradient Effect ===\n")
     
-    let strip = new WS2812B()
+    let strip = new Strip()
     strip.setup({
         pin: LED_PIN,
         length: LED_COUNT
