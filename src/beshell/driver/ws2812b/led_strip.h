@@ -6,12 +6,16 @@
 #pragma once
 
 #include <stdint.h>
-#include "esp_err.h"
+#include "led_strip_port.h"
+#include "led_strip_types.h"
+
+#ifdef ESP_PLATFORM
 #include "led_strip_rmt.h"
 #include "esp_idf_version.h"
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
 #include "led_strip_spi.h"
+#endif
 #endif
 
 #ifdef __cplusplus

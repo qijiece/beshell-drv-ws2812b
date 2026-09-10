@@ -9,38 +9,112 @@ namespace be::driver::ws2812b{
 
     namespace tween = be::animator::tween ;
 
-    // 可动画数值属性表（getProp/setProp 的 magic 即下标）
+    // 可动画数值属性表（getProp/setProp 的 magic 即下标）——「间补」属性。
+    // 数值成员分两类：平铺成员（x/len/shadowFront/shadowBack，flat）与
+    // 过渡内成员（body/front/back 内的 h0/s0/v0/h1/s1/v1，经 trans + tMember 两级定位）。
+    // C++ 无法用 `double Section::*` 直接表达「成员之成员」，故用两级成员指针 + 求址函数。
     typedef struct {
         const char * name ;
-        double Section::* member ;
+        Transition Section::* trans ;    // 非 null = 过渡内成员；null = 平铺成员
+        double Transition::* tMember ;   // 过渡内 double 成员（trans 非 null 时使用）
+        double Section::* flat ;         // 平铺 double 成员（trans 为 null 时使用）
     } NumPropDef ;
     static const NumPropDef numProps[] = {
-        {"x",           &Section::x},
-        {"len",         &Section::len},
-        {"h0",          &Section::h0},
-        {"s0",          &Section::s0},
-        {"v0",          &Section::v0},
-        {"h1",          &Section::h1},
-        {"s1",          &Section::s1},
-        {"v1",          &Section::v1},
-        {"shadowFront", &Section::shadowFront},
-        {"shadowBack",  &Section::shadowBack},
+        {"x",           nullptr, nullptr,              &Section::x},
+        {"len",         nullptr, nullptr,              &Section::len},
+        {"shadowFront", nullptr, nullptr,              &Section::shadowFront},
+        {"shadowBack",  nullptr, nullptr,              &Section::shadowBack},
+        {"h0",          &Section::body,  &Transition::h0,  nullptr},
+        {"s0",          &Section::body,  &Transition::s0,  nullptr},
+        {"v0",          &Section::body,  &Transition::v0,  nullptr},
+        {"h1",          &Section::body,  &Transition::h1,  nullptr},
+        {"s1",          &Section::body,  &Transition::s1,  nullptr},
+        {"v1",          &Section::body,  &Transition::v1,  nullptr},
+        {"frontH0",     &Section::front, &Transition::h0,  nullptr},
+        {"frontS0",     &Section::front, &Transition::s0,  nullptr},
+        {"frontV0",     &Section::front, &Transition::v0,  nullptr},
+        {"frontH1",     &Section::front, &Transition::h1,  nullptr},
+        {"frontS1",     &Section::front, &Transition::s1,  nullptr},
+        {"frontV1",     &Section::front, &Transition::v1,  nullptr},
+        {"backH0",      &Section::back,  &Transition::h0,  nullptr},
+        {"backS0",      &Section::back,  &Transition::s0,  nullptr},
+        {"backV0",      &Section::back,  &Transition::v0,  nullptr},
+        {"backH1",      &Section::back,  &Transition::h1,  nullptr},
+        {"backS1",      &Section::back,  &Transition::s1,  nullptr},
+        {"backV1",      &Section::back,  &Transition::v1,  nullptr},
     } ;
     #define NUM_PROP_COUNT (sizeof(numProps)/sizeof(numProps[0]))
 
-    // 缓动配置属性表（magic = NUM_PROP_COUNT + 下标）
+    // 求某个可动画数值属性的 double 地址（含嵌套成员）
+    static inline double * numPropAddr(Section * sec, const NumPropDef & d) {
+        if(d.trans) {
+            return &((sec->*d.trans).*d.tMember) ;
+        }
+        return &(sec->*d.flat) ;
+    }
+
+    // 缓动配置属性表（magic = NUM_PROP_COUNT + 下标）——「过渡」静态缓动（全部为过渡内成员）
     typedef struct {
         const char * name ;
-        tween::TweenEaseType Section::* member ;
+        Transition Section::* trans ;
+        tween::TweenEaseType Transition::* member ;
     } EasePropDef ;
     static const EasePropDef easeProps[] = {
-        {"easeH",          &Section::easeH},
-        {"easeS",          &Section::easeS},
-        {"easeV",          &Section::easeV},
-        {"shadowFrontEase",&Section::shadowFrontEase},
-        {"shadowBackEase", &Section::shadowBackEase},
+        {"easeH",       &Section::body,  &Transition::easeH},
+        {"easeS",       &Section::body,  &Transition::easeS},
+        {"easeV",       &Section::body,  &Transition::easeV},
+        {"frontEaseH",  &Section::front, &Transition::easeH},
+        {"frontEaseS",  &Section::front, &Transition::easeS},
+        {"frontEaseV",  &Section::front, &Transition::easeV},
+        {"backEaseH",   &Section::back,  &Transition::easeH},
+        {"backEaseS",   &Section::back,  &Transition::easeS},
+        {"backEaseV",   &Section::back,  &Transition::easeV},
     } ;
     #define EASE_PROP_COUNT (sizeof(easeProps)/sizeof(easeProps[0]))
+
+    static inline tween::TweenEaseType & easeMember(Section * sec, const EasePropDef & d) {
+        return (sec->*d.trans).*d.member ;
+    }
+
+    // 色相方向布尔属性表（magic = NUM_PROP_COUNT + EASE_PROP_COUNT + 下标）
+    typedef struct {
+        const char * name ;
+        Transition Section::* trans ;
+        bool Transition::* member ;
+    } BoolPropDef ;
+    static const BoolPropDef boolProps[] = {
+        {"h_ccw",     &Section::body,  &Transition::h_ccw},
+        {"frontCcw",  &Section::front, &Transition::h_ccw},
+        {"backCcw",   &Section::back,  &Transition::h_ccw},
+    } ;
+    #define BOOL_PROP_COUNT (sizeof(boolProps)/sizeof(boolProps[0]))
+
+    static inline bool & boolMember(Section * sec, const BoolPropDef & d) {
+        return (sec->*d.trans).*d.member ;
+    }
+
+    // 缓动 S 参数表（不暴露为 JS 属性，仅 applyConfig/exportConfig 序列化）
+    typedef struct {
+        const char * name ;
+        Transition Section::* trans ;
+        double Transition::* member ;
+    } SPropDef ;
+    static const SPropDef sProps[] = {
+        {"easeHS",      &Section::body,  &Transition::easeHS},
+        {"easeSS",      &Section::body,  &Transition::easeSS},
+        {"easeVS",      &Section::body,  &Transition::easeVS},
+        {"frontEaseHS", &Section::front, &Transition::easeHS},
+        {"frontEaseSS", &Section::front, &Transition::easeSS},
+        {"frontEaseVS", &Section::front, &Transition::easeVS},
+        {"backEaseHS",  &Section::back,  &Transition::easeHS},
+        {"backEaseSS",  &Section::back,  &Transition::easeSS},
+        {"backEaseVS",  &Section::back,  &Transition::easeVS},
+    } ;
+    #define S_PROP_COUNT (sizeof(sProps)/sizeof(sProps[0]))
+
+    static inline double & sMember(Section * sec, const SPropDef & d) {
+        return (sec->*d.trans).*d.member ;
+    }
 
     // 解析 easeName/easeParams：ease 省略时返回 TWEEN_EASE_UNKNOWN（表示"未提供"）
     // 与 animator 模块 Timeline 的 JS 接口行为一致
@@ -127,7 +201,7 @@ namespace be::driver::ws2812b{
      * @class Section
      * @extends NativeClass
      */
-    DEFINE_NCLASS_META(Section, NativeClass)
+    DEFINE_NCLASS_META(Section, DriverClass)
     std::vector<JSCFunctionListEntry> Section::methods = {
         JS_CFUNC_DEF("set", 1, Section::set),
         JS_CFUNC_DEF("setKeyFrame", 2, Section::setKeyFrame),
@@ -136,26 +210,44 @@ namespace be::driver::ws2812b{
         JS_CFUNC_DEF("draw", 1, Section::draw),
         JS_CFUNC_DEF("exportConfig", 0, Section::exportConfig),
         JS_CFUNC_DEF("importConfig", 1, Section::importConfig),
-        CGETSET_MAGIC_DEF_CPP("x",               Section::getProp, Section::setProp, 0),
-        CGETSET_MAGIC_DEF_CPP("len",             Section::getProp, Section::setProp, 1),
-        CGETSET_MAGIC_DEF_CPP("h0",              Section::getProp, Section::setProp, 2),
-        CGETSET_MAGIC_DEF_CPP("s0",              Section::getProp, Section::setProp, 3),
-        CGETSET_MAGIC_DEF_CPP("v0",              Section::getProp, Section::setProp, 4),
-        CGETSET_MAGIC_DEF_CPP("h1",              Section::getProp, Section::setProp, 5),
-        CGETSET_MAGIC_DEF_CPP("s1",              Section::getProp, Section::setProp, 6),
-        CGETSET_MAGIC_DEF_CPP("v1",              Section::getProp, Section::setProp, 7),
-        CGETSET_MAGIC_DEF_CPP("shadowFront",     Section::getProp, Section::setProp, 8),
-        CGETSET_MAGIC_DEF_CPP("shadowBack",      Section::getProp, Section::setProp, 9),
-        CGETSET_MAGIC_DEF_CPP("easeH",           Section::getProp, Section::setProp, 10),
-        CGETSET_MAGIC_DEF_CPP("easeS",           Section::getProp, Section::setProp, 11),
-        CGETSET_MAGIC_DEF_CPP("easeV",           Section::getProp, Section::setProp, 12),
-        CGETSET_MAGIC_DEF_CPP("shadowFrontEase", Section::getProp, Section::setProp, 13),
-        CGETSET_MAGIC_DEF_CPP("shadowBackEase",  Section::getProp, Section::setProp, 14),
-        CGETSET_MAGIC_DEF_CPP("h_ccw",           Section::getProp, Section::setProp, 15),
+        CGETSET_MAGIC_DEF_CPP("x",           Section::getProp, Section::setProp, 0),
+        CGETSET_MAGIC_DEF_CPP("len",         Section::getProp, Section::setProp, 1),
+        CGETSET_MAGIC_DEF_CPP("shadowFront", Section::getProp, Section::setProp, 2),
+        CGETSET_MAGIC_DEF_CPP("shadowBack",  Section::getProp, Section::setProp, 3),
+        CGETSET_MAGIC_DEF_CPP("h0",          Section::getProp, Section::setProp, 4),
+        CGETSET_MAGIC_DEF_CPP("s0",          Section::getProp, Section::setProp, 5),
+        CGETSET_MAGIC_DEF_CPP("v0",          Section::getProp, Section::setProp, 6),
+        CGETSET_MAGIC_DEF_CPP("h1",          Section::getProp, Section::setProp, 7),
+        CGETSET_MAGIC_DEF_CPP("s1",          Section::getProp, Section::setProp, 8),
+        CGETSET_MAGIC_DEF_CPP("v1",          Section::getProp, Section::setProp, 9),
+        CGETSET_MAGIC_DEF_CPP("frontH0",     Section::getProp, Section::setProp, 10),
+        CGETSET_MAGIC_DEF_CPP("frontS0",     Section::getProp, Section::setProp, 11),
+        CGETSET_MAGIC_DEF_CPP("frontV0",     Section::getProp, Section::setProp, 12),
+        CGETSET_MAGIC_DEF_CPP("frontH1",     Section::getProp, Section::setProp, 13),
+        CGETSET_MAGIC_DEF_CPP("frontS1",     Section::getProp, Section::setProp, 14),
+        CGETSET_MAGIC_DEF_CPP("frontV1",     Section::getProp, Section::setProp, 15),
+        CGETSET_MAGIC_DEF_CPP("backH0",      Section::getProp, Section::setProp, 16),
+        CGETSET_MAGIC_DEF_CPP("backS0",      Section::getProp, Section::setProp, 17),
+        CGETSET_MAGIC_DEF_CPP("backV0",      Section::getProp, Section::setProp, 18),
+        CGETSET_MAGIC_DEF_CPP("backH1",      Section::getProp, Section::setProp, 19),
+        CGETSET_MAGIC_DEF_CPP("backS1",      Section::getProp, Section::setProp, 20),
+        CGETSET_MAGIC_DEF_CPP("backV1",      Section::getProp, Section::setProp, 21),
+        CGETSET_MAGIC_DEF_CPP("easeH",       Section::getProp, Section::setProp, 22),
+        CGETSET_MAGIC_DEF_CPP("easeS",       Section::getProp, Section::setProp, 23),
+        CGETSET_MAGIC_DEF_CPP("easeV",       Section::getProp, Section::setProp, 24),
+        CGETSET_MAGIC_DEF_CPP("frontEaseH",  Section::getProp, Section::setProp, 25),
+        CGETSET_MAGIC_DEF_CPP("frontEaseS",  Section::getProp, Section::setProp, 26),
+        CGETSET_MAGIC_DEF_CPP("frontEaseV",  Section::getProp, Section::setProp, 27),
+        CGETSET_MAGIC_DEF_CPP("backEaseH",   Section::getProp, Section::setProp, 28),
+        CGETSET_MAGIC_DEF_CPP("backEaseS",   Section::getProp, Section::setProp, 29),
+        CGETSET_MAGIC_DEF_CPP("backEaseV",   Section::getProp, Section::setProp, 30),
+        CGETSET_MAGIC_DEF_CPP("h_ccw",       Section::getProp, Section::setProp, 31),
+        CGETSET_MAGIC_DEF_CPP("frontCcw",    Section::getProp, Section::setProp, 32),
+        CGETSET_MAGIC_DEF_CPP("backCcw",     Section::getProp, Section::setProp, 33),
     } ;
 
     Section::Section(JSContext * ctx, JSValue _jsobj)
-        : NativeClass(ctx,build(ctx,_jsobj))
+        : DriverClass(ctx,build(ctx,_jsobj))
     {
     }
 
@@ -171,10 +263,10 @@ namespace be::driver::ws2812b{
         return (Rainbow*) NativeClass::fromJS(rainbowObj) ;
     }
 
-    double Section::* Section::propMember(const char * name) {
+    double * Section::propMember(Section * sec, const char * name) {
         for(size_t i=0; i<NUM_PROP_COUNT; i++) {
             if(strcmp(numProps[i].name, name)==0) {
-                return numProps[i].member ;
+                return numPropAddr(sec, numProps[i]) ;
             }
         }
         return nullptr ;
@@ -182,7 +274,7 @@ namespace be::driver::ws2812b{
 
     const char * Section::propName(Section * sec, const double * cptr) {
         for(size_t i=0; i<NUM_PROP_COUNT; i++) {
-            if(&(sec->*(numProps[i].member))==cptr) {
+            if(numPropAddr(sec, numProps[i])==cptr) {
                 return numProps[i].name ;
             }
         }
@@ -343,15 +435,15 @@ namespace be::driver::ws2812b{
     JSValue Section::getProp(JSContext *ctx, JSValueConst this_val, int magic) {
         THIS_NCLASS(Section, that)
         if(magic<(int)NUM_PROP_COUNT) {
-            return JS_NewFloat64(ctx, that->*(numProps[magic].member)) ;
+            return JS_NewFloat64(ctx, *numPropAddr(that, numProps[magic])) ;
         }
         magic -= NUM_PROP_COUNT ;
         if(magic<(int)EASE_PROP_COUNT) {
-            return JS_NewString(ctx, easeName(that->*(easeProps[magic].member))) ;
+            return JS_NewString(ctx, easeName(easeMember(that, easeProps[magic]))) ;
         }
         magic -= EASE_PROP_COUNT ;
-        if(magic==0) {
-            return JS_NewBool(ctx, that->h_ccw) ;
+        if(magic<(int)BOOL_PROP_COUNT) {
+            return JS_NewBool(ctx, boolMember(that, boolProps[magic])) ;
         }
         return JS_UNDEFINED ;
     }
@@ -363,7 +455,7 @@ namespace be::driver::ws2812b{
             if(JS_ToFloat64(ctx, &v, val)!=0) {
                 JSTHROW("property %s must be a number", numProps[magic].name)
             }
-            that->*(numProps[magic].member) = v ;
+            *numPropAddr(that, numProps[magic]) = v ;
             return JS_UNDEFINED ;
         }
         magic -= NUM_PROP_COUNT ;
@@ -375,14 +467,14 @@ namespace be::driver::ws2812b{
                 if(e==tween::TWEEN_EASE_UNKNOWN) {
                     JSTHROW("unknown ease name for %s", easeProps[magic].name)
                 }
-                that->*(easeProps[magic].member) = e ;
+                easeMember(that, easeProps[magic]) = e ;
             }
             else if(JS_IsNumber(val)) {
                 int32_t id ;
                 if(JS_ToInt32(ctx, &id, val)!=0 || id<0 || id>=tween::TWEEN_EASE_COUNT) {
                     JSTHROW("invalid ease id for %s", easeProps[magic].name)
                 }
-                that->*(easeProps[magic].member) = (tween::TweenEaseType) id ;
+                easeMember(that, easeProps[magic]) = (tween::TweenEaseType) id ;
             }
             else {
                 JSTHROW("property %s must be an ease name string", easeProps[magic].name)
@@ -390,14 +482,54 @@ namespace be::driver::ws2812b{
             return JS_UNDEFINED ;
         }
         magic -= EASE_PROP_COUNT ;
-        if(magic==0) {
-            that->h_ccw = JS_ToBool(ctx, val) ;
+        if(magic<(int)BOOL_PROP_COUNT) {
+            boolMember(that, boolProps[magic]) = JS_ToBool(ctx, val) ;
             return JS_UNDEFINED ;
         }
         return JS_UNDEFINED ;
     }
 
     // ---------- 绘制 ----------
+
+    // 渲染一种过渡：从 startIdx 起、按 step 方向、共 count 颗，第 i 颗的 t=(tOffset+i)/tDenom
+    //（tDenom<=0 时 t 恒 0，即只用起点色）。三种过渡（主体/前阴影/后阴影）共用，结构完全一致。
+    static void drawTransition(Strip * strip, int startIdx, int count, int step,
+                               double tOffset, double tDenom, const Transition & tr) {
+        if(count<=0) {
+            return ;
+        }
+        // 色相方向归一（h1==h0 时 dh=0，纯色不整圈）；与方向一致的多圈差值（如 0→720）原样保留
+        double dh = tr.h1 - tr.h0 ;
+        if(tr.h_ccw) {
+            if(dh>0) {
+                dh = fmod(dh, 360.0) ;
+                if(dh>=0) {
+                    dh -= 360.0 ;
+                }
+            }
+        }
+        else {
+            if(dh<0) {
+                dh = fmod(dh, 360.0) ;
+                if(dh<=0) {
+                    dh += 360.0 ;
+                }
+            }
+        }
+        for(int i=0; i<count; i++) {
+            double t = tDenom>0 ? (tOffset + i) / tDenom : 0 ;
+            if(t>1) {
+                t = 1 ;
+            }
+            if(t<0) {
+                t = 0 ;
+            }
+            double h = tr.h0 + dh * tween::ease(tr.easeH, (float)t, 0, 1, 1, (float)tr.easeHS) ;
+            double s = tr.s0 + (tr.s1 - tr.s0) * tween::ease(tr.easeS, (float)t, 0, 1, 1, (float)tr.easeSS) ;
+            double v = tr.v0 + (tr.v1 - tr.v0) * tween::ease(tr.easeV, (float)t, 0, 1, 1, (float)tr.easeVS) ;
+            strip->setPixelHSV(startIdx + i*step, h, s, v) ;
+        }
+    }
 
     void Section::drawTo(Strip * strip) {
         if(!strip || !strip->isReady()) {
@@ -422,75 +554,24 @@ namespace be::driver::ws2812b{
         }
         int xi = (int)(x + 0.5) ;
 
-        // 前驱阴影（索引减小方向，x 之前）：取起点色，明度衰减至 0
+        // 主体过渡：起点 → 终点（len==1 时退化为点，只用起点色）
+        drawTransition(strip, xi, n, +1, 0, n>1 ? (double)(n-1) : 0, body) ;
+
+        // 前阴影过渡：起点向前（索引减小）
         if(shadowFront>0) {
-            int nsf = (int)(shadowFront + 0.5) ;
-            for(int i=1; i<=nsf; i++) {
-                double t = (double)i/shadowFront ;
-                if(t>1) t = 1 ;
-                double f = 1.0 - tween::ease(shadowFrontEase, (float)t, 0, 1, 1, 1.70158f) ;
-                if(f<=0) {
-                    continue ;
-                }
-                strip->setPixelHSV(xi - i, h0, s0, v0*f) ;
-            }
+            drawTransition(strip, xi-1, (int)(shadowFront+0.5), -1, 1, shadowFront, front) ;
         }
 
-        // 主体：起点 HSV 各自按缓动过渡到终点；len==1 时退化为点（只用起点色）
-        // 色相过渡方向：默认顺时针（色相增大），h_ccw=true 时逆时针（色相减小）。
-        // h1-h0 与方向不符时归一化到方向所在的一圈内（如顺时针 0→360 走一整圈）；
-        // 与方向一致的多圈差值（如 0→720）原样保留。显示时经 hsv2rgb 对 360 取模回卷。
-        double dh = h1 - h0 ;
-        if(h_ccw) {
-            if(dh>=0) {
-                dh = fmod(dh, 360.0) ;
-                if(dh>=0) {
-                    dh -= 360.0 ;
-                }
-            }
-        }
-        else {
-            if(dh<=0) {
-                dh = fmod(dh, 360.0) ;
-                if(dh<=0) {
-                    dh += 360.0 ;
-                }
-            }
-        }
-        for(int i=0; i<n; i++) {
-            if(n>1) {
-                double t = (double)i/(n-1) ;
-                double h = h0 + dh * tween::ease(easeH, (float)t, 0, 1, 1, 1.70158f) ;
-                double s = s0 + (s1-s0) * tween::ease(easeS, (float)t, 0, 1, 1, 1.70158f) ;
-                double v = v0 + (v1-v0) * tween::ease(easeV, (float)t, 0, 1, 1, 1.70158f) ;
-                strip->setPixelHSV(xi+i, h, s, v) ;
-            } else {
-                strip->setPixelHSV(xi, h0, s0, v0) ;
-            }
-        }
-
-        // 后续阴影（索引增大方向，主体末尾之后）：取终点色（点模式取起点色），明度衰减至 0
+        // 后阴影过渡：起点向后（索引增大）
         if(shadowBack>0) {
-            double eh = n>1 ? h1 : h0 ;
-            double es = n>1 ? s1 : s0 ;
-            double ev = n>1 ? v1 : v0 ;
-            int nsb = (int)(shadowBack + 0.5) ;
-            for(int i=1; i<=nsb; i++) {
-                double t = (double)i/shadowBack ;
-                if(t>1) t = 1 ;
-                double f = 1.0 - tween::ease(shadowBackEase, (float)t, 0, 1, 1, 1.70158f) ;
-                if(f<=0) {
-                    continue ;
-                }
-                strip->setPixelHSV(xi + n-1 + i, eh, es, ev*f) ;
-            }
+            drawTransition(strip, xi+n, (int)(shadowBack+0.5), +1, 1, shadowBack, back) ;
         }
     }
 
     // ---------- 关键帧 ----------
 
     int Section::setOne(uint32_t frame, const char * prop, JSValueConst jsValue, JSValueConst jsEase, JSValueConst jsParams) {
-        double Section::* member = Section::propMember(prop) ;
+        double * member = Section::propMember(this, prop) ;
         if(!member) {
             JS_ThrowReferenceError(ctx, "unknown section property: %s", prop) ;
             return -1 ;
@@ -511,7 +592,7 @@ namespace be::driver::ws2812b{
             JS_ThrowReferenceError(ctx, "section is not attached to a rainbow") ;
             return -1 ;
         }
-        r->ensureTimeline()->set(frame, &(this->*member), value, ease, easeS, jsobj) ;
+        r->ensureTimeline()->set(frame, member, value, ease, easeS, jsobj) ;
         return 0 ;
     }
 
@@ -726,12 +807,12 @@ namespace be::driver::ws2812b{
             return JS_UNDEFINED ;    // 时间线未创建，无关键帧可删
         }
         if(prop) {
-            double Section::* member = Section::propMember(prop) ;
+            double * member = Section::propMember(that, prop) ;
             JS_FreeCString(ctx, prop) ;
             if(!member) {
                 JSTHROW("unknown section property")
             }
-            void * cptr = (void*)&(that->*member) ;
+            void * cptr = (void*)member ;
             if(ms>=0) {
                 r->timeline->unset(r->timeToFrame(ms), cptr) ;   // 该属性在指定帧
             } else {
@@ -741,7 +822,7 @@ namespace be::driver::ws2812b{
             // 仅时间：移除该帧此分段的全部可动画属性轨道
             uint32_t frame = r->timeToFrame(ms) ;
             for(size_t i=0; i<NUM_PROP_COUNT; i++) {
-                r->timeline->unset(frame, (void*)&(that->*(numProps[i].member))) ;
+                r->timeline->unset(frame, (void*)numPropAddr(that, numProps[i])) ;
             }
         }
         return JS_UNDEFINED ;
@@ -787,7 +868,7 @@ namespace be::driver::ws2812b{
             if(JS_IsNumber(v)) {
                 double d ;
                 if(JS_ToFloat64(ctx, &d, v)==0) {
-                    this->*(numProps[i].member) = d ;
+                    *numPropAddr(this, numProps[i]) = d ;
                 }
             }
             JS_FreeValue(ctx, v) ;
@@ -799,33 +880,50 @@ namespace be::driver::ws2812b{
                 tween::TweenEaseType e = tween::map_name_to_id(cstr) ;
                 JS_FreeCString(ctx, cstr) ;
                 if(e!=tween::TWEEN_EASE_UNKNOWN) {
-                    this->*(easeProps[i].member) = e ;
+                    easeMember(this, easeProps[i]) = e ;
                 }
             }
             else if(JS_IsNumber(v)) {
                 int32_t id ;
                 if(JS_ToInt32(ctx, &id, v)==0 && id>=0 && id<tween::TWEEN_EASE_COUNT) {
-                    this->*(easeProps[i].member) = (tween::TweenEaseType) id ;
+                    easeMember(this, easeProps[i]) = (tween::TweenEaseType) id ;
                 }
             }
             JS_FreeValue(ctx, v) ;
         }
-        JSValue vm = JS_GetPropertyStr(ctx, cfg, "h_ccw") ;
-        if(JS_IsBool(vm)) {
-            h_ccw = JS_ToBool(ctx, vm) ;
+        for(size_t i=0; i<BOOL_PROP_COUNT; i++) {
+            JSValue v = JS_GetPropertyStr(ctx, cfg, boolProps[i].name) ;
+            if(JS_IsBool(v)) {
+                boolMember(this, boolProps[i]) = JS_ToBool(ctx, v) ;
+            }
+            JS_FreeValue(ctx, v) ;
         }
-        JS_FreeValue(ctx, vm) ;
+        for(size_t i=0; i<S_PROP_COUNT; i++) {
+            JSValue v = JS_GetPropertyStr(ctx, cfg, sProps[i].name) ;
+            if(JS_IsNumber(v)) {
+                double d ;
+                if(JS_ToFloat64(ctx, &d, v)==0) {
+                    sMember(this, sProps[i]) = d ;
+                }
+            }
+            JS_FreeValue(ctx, v) ;
+        }
     }
 
     JSValue Section::exportConfig() {
         JSValue obj = JS_NewObject(ctx) ;
         for(size_t i=0; i<NUM_PROP_COUNT; i++) {
-            JS_SetPropertyStr(ctx, obj, numProps[i].name, JS_NewFloat64(ctx, this->*(numProps[i].member))) ;
+            JS_SetPropertyStr(ctx, obj, numProps[i].name, JS_NewFloat64(ctx, *numPropAddr(this, numProps[i]))) ;
         }
         for(size_t i=0; i<EASE_PROP_COUNT; i++) {
-            JS_SetPropertyStr(ctx, obj, easeProps[i].name, JS_NewString(ctx, easeName(this->*(easeProps[i].member)))) ;
+            JS_SetPropertyStr(ctx, obj, easeProps[i].name, JS_NewString(ctx, easeName(easeMember(this, easeProps[i])))) ;
         }
-        JS_SetPropertyStr(ctx, obj, "h_ccw", JS_NewBool(ctx, h_ccw)) ;
+        for(size_t i=0; i<BOOL_PROP_COUNT; i++) {
+            JS_SetPropertyStr(ctx, obj, boolProps[i].name, JS_NewBool(ctx, boolMember(this, boolProps[i]))) ;
+        }
+        for(size_t i=0; i<S_PROP_COUNT; i++) {
+            JS_SetPropertyStr(ctx, obj, sProps[i].name, JS_NewFloat64(ctx, sMember(this, sProps[i]))) ;
+        }
         return obj ;
     }
 

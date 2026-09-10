@@ -1,6 +1,6 @@
 #pragma once
 
-#include <beshell/NativeClass.hpp>
+#include <beshell/driver/DriverClass.hpp>
 #include <beshell/module/animator/Tween.hpp>
 #include "Strip.hpp"
 
@@ -9,35 +9,43 @@ namespace be::driver::ws2812b{
 
     class Rainbow ;     // 前向声明（所属主控，addSection 时建立关联）
 
+    // 渲染过渡（帧内 HSV 渐变）：三种过渡（主体/前阴影/后阴影）参数与结构完全一致。
+    // 「过渡」为静态、与时间轴无关、在单帧渲染内发生的颜色渐变；
+    // 随时间轴变化的动画插补另称「间补」（由 Timeline 驱动，见 Rainbow）。
+    struct Transition {
+        double h0 = 0, s0 = 1, v0 = 1 ;    // 起点 HSV（h:0-360，s/v:0-1）
+        double h1 = 0, s1 = 1, v1 = 1 ;    // 终点 HSV（阴影默认 v1=0 完全淡出）
+        be::animator::tween::TweenEaseType easeH = be::animator::tween::TWEEN_LINEAR ;
+        be::animator::tween::TweenEaseType easeS = be::animator::tween::TWEEN_LINEAR ;
+        be::animator::tween::TweenEaseType easeV = be::animator::tween::TWEEN_LINEAR ;
+        double easeHS = 1.70158 ;          // H 缓动参数 s（仅 Back 系列使用，其余忽略）
+        double easeSS = 1.70158 ;          // S 缓动参数 s
+        double easeVS = 1.70158 ;          // V 缓动参数 s
+        bool h_ccw = false ;               // 色相过渡方向：false=顺时针（色相增大），true=逆时针
+    } ;
+
     // 灯带分段
     //
     // 描述灯带上的一段：位置、长度、起终点 HSV 及过渡缓动、前后阴影。
     // 数值属性存放为 C++ double 成员，由 Rainbow 内部的 Timeline
     // 通过 C++ 指针轨道直接驱动（跳过 QuickJS 属性读写开销）。
     //（文档注释见 Section.cpp）
-    class Section: public be::NativeClass {
+    class Section: public be::driver::DriverClass {
         DECLARE_NCLASS_META
     private:
         static std::vector<JSCFunctionListEntry> methods ;
 
     public:
-        // ---- 可动画属性（Rainbow 的 timeline 以 C++ 指针轨道直接写入）----
+        // ---- 可动画属性（Rainbow 的 timeline 以 C++ 指针轨道直接写入，即「间补」）----
         double x = 0 ;                  // 起始位置（像素索引，可为小数，绘制时四舍五入）
-        double len = 1 ;                // 主体长度（>=1），为 1 时退化为点（终点 HSV 无意义）
-        double h0 = 0, s0 = 1, v0 = 1 ; // 起点 HSV（h:0-360, s/v:0-1）
-        double h1 = 0, s1 = 1, v1 = 1 ; // 终点 HSV
-        double shadowFront = 0 ;        // 前驱阴影长度（索引减小方向，x 之前），取起点色、明度衰减至 0
-        double shadowBack = 0 ;         // 后续阴影长度（索引增大方向，主体末尾之后），取终点色、明度衰减至 0
+        double len = 1 ;                // 主体长度（>=1），为 1 时退化为点
+        double shadowFront = 0 ;        // 前阴影长度（索引减小方向），0 = 无前阴影
+        double shadowBack = 0 ;         // 后阴影长度（索引增大方向），0 = 无后阴影
 
-        // ---- 缓动配置（不参与逐帧插值）----
-        be::animator::tween::TweenEaseType easeH = be::animator::tween::TWEEN_LINEAR ;
-        be::animator::tween::TweenEaseType easeS = be::animator::tween::TWEEN_LINEAR ;
-        be::animator::tween::TweenEaseType easeV = be::animator::tween::TWEEN_LINEAR ;
-        be::animator::tween::TweenEaseType shadowFrontEase = be::animator::tween::TWEEN_LINEAR ;
-        be::animator::tween::TweenEaseType shadowBackEase = be::animator::tween::TWEEN_LINEAR ;
-
-        // 色相过渡方向：false=顺时针（色相增大，默认），true=逆时针（色相减小）
-        bool h_ccw = false ;
+        // ---- 三种渲染过渡（结构完全一致）----
+        Transition body ;               // 主体过渡：起点 → 终点
+        Transition front ;              // 前阴影过渡：起点向前
+        Transition back ;               // 后阴影过渡：起点向后
 
         Strip * strip = nullptr ;       // 绑定的 strip，由 Rainbow::addSection/removeSection 维护
         // 所属 Rainbow 的弱引用（不持有计数，避免与 Rainbow.sections 循环引用；
@@ -57,9 +65,9 @@ namespace be::driver::ws2812b{
         void applyConfig(JSValueConst cfg) ;
         JSValue exportConfig() ;
 
-        // 属性名 -> 可动画成员指针（非可动画属性返回 nullptr）
-        static double Section::* propMember(const char * name) ;
-        // 成员指针 -> 属性名（供 Rainbow 导出关键帧时反查）
+        // 属性名 -> 可动画成员的 double 地址（非可动画属性返回 nullptr）
+        static double * propMember(Section * sec, const char * name) ;
+        // 成员地址 -> 属性名（供 Rainbow 导出关键帧时反查）
         static const char * propName(Section * sec, const double * cptr) ;
 
         // 关键帧写入（frame 已由 Rainbow 换算）；出错返回 -1 且已抛出异常

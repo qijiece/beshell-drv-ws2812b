@@ -14,5 +14,5 @@ repository: "https://github.com/become-cool/beshell-drv-ws2812b.git"
 license: "LGPL"
 dependencies:
   "become-cool/beshell":
-    version: ">=1.0.23"
+    version: ">=1.0.24"
 

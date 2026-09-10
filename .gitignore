@@ -1,4 +1,10 @@
 build/
+build-wasm/
+build-win/
+build-win64/
+pc/web/beshell-ws2812b-wasm.js
+pc/web/beshell-ws2812b-wasm.wasm
+pc/web/beshell-ws2812b-wasm.data
 sdkconfig
 sdkconfig.old
 dist

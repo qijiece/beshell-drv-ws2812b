@@ -6,7 +6,7 @@
 #pragma once
 
 #include <stdint.h>
-#include "esp_err.h"
+#include "led_strip_port.h"
 
 #ifdef __cplusplus
 extern "C" {

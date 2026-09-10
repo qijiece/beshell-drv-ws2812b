@@ -1,8 +1,7 @@
 #pragma once
 
-#include <beshell/NativeClass.hpp>
+#include <beshell/driver/DriverClass.hpp>
 #include <cstdint>
-#include "hal/gpio_types.h"
 #include "led_strip.h"
 
 
@@ -21,12 +20,12 @@ namespace be::driver::ws2812b{
     // 用于控制 WS2812B 全彩 LED 灯带，支持设置单个像素颜色、清空灯带和刷新显示。
     // 使用 RMT 硬件模块实现精确的时序控制。
     //（文档注释见 Strip.cpp）
-    class Strip: public be::NativeClass {
+    class Strip: public be::driver::DriverClass {
         DECLARE_NCLASS_META
     private:
         led_strip_handle_t led_strip = nullptr;
         int length = 0 ;
-        gpio_num_t pin = GPIO_NUM_NC ;
+        int pin = -1 ;
         bool loop = false ;             // 首尾相接（回环），setPixel 越界索引取模回卷
 
         static std::vector<JSCFunctionListEntry> methods ;

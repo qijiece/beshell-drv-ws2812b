@@ -66,7 +66,7 @@ namespace be::driver::ws2812b{
      * @class Rainbow
      * @extends NativeClass
      */
-    DEFINE_NCLASS_META(Rainbow, NativeClass)
+    DEFINE_NCLASS_META(Rainbow, DriverClass)
     std::vector<JSCFunctionListEntry> Rainbow::methods = {
         JS_CFUNC_DEF("addSection", 0, Rainbow::addSection),
         JS_CFUNC_DEF("removeSection", 1, Rainbow::removeSection),
@@ -85,7 +85,7 @@ namespace be::driver::ws2812b{
     } ;
 
     Rainbow::Rainbow(JSContext * ctx, JSValue _jsobj)
-        : NativeClass(ctx,build(ctx,_jsobj))
+        : DriverClass(ctx,build(ctx,_jsobj))
     {
     }
 
@@ -582,6 +582,23 @@ namespace be::driver::ws2812b{
         }
         JS_SetPropertyStr(ctx, obj, "keyframes", arrKfs) ;
 
+        // 帧动作（jumpTo/playTo）：帧号制；次数取初始值（play() 复位语义往返一致）
+        JSValue arrActs = JS_NewArray(ctx) ;
+        uint32_t ai = 0 ;
+        if(that->timeline) {
+            for(auto & kv : that->timeline->getFrameActions()) {
+                const Timeline::FrameAction & act = kv.second ;
+                JSValue jact = JS_NewObject(ctx) ;
+                JS_SetPropertyStr(ctx, jact, "frame", JS_NewUint32(ctx, kv.first)) ;
+                JS_SetPropertyStr(ctx, jact, "jumpTo", JS_NewInt64(ctx, act.jumpTo)) ;
+                JS_SetPropertyStr(ctx, jact, "jumpCount", JS_NewInt32(ctx, act.jumpCountInit)) ;
+                JS_SetPropertyStr(ctx, jact, "playTo", JS_NewInt64(ctx, act.playTo)) ;
+                JS_SetPropertyStr(ctx, jact, "playCount", JS_NewInt32(ctx, act.playCountInit)) ;
+                JS_SetPropertyUint32(ctx, arrActs, ai++, jact) ;
+            }
+        }
+        JS_SetPropertyStr(ctx, obj, "frameActions", arrActs) ;
+
         return obj ;
     }
 
@@ -614,7 +631,7 @@ namespace be::driver::ws2812b{
         }
         const char * prop = JS_ToCString(ctx, jv) ;
         JS_FreeValue(ctx, jv) ;
-        double Section::* member = Section::propMember(prop) ;
+        double * member = Section::propMember(sec, prop) ;
         JS_FreeCString(ctx, prop) ;
         if(!member) {
             return ;
@@ -644,7 +661,52 @@ namespace be::driver::ws2812b{
         }
         JS_FreeValue(ctx, jv) ;
 
-        timeline->set(frame, &(sec->*member), value, ease, easeS, sec->jsobj) ;
+        timeline->set(frame, member, value, ease, easeS, sec->jsobj) ;
+    }
+
+    // 从配置对象恢复一个帧动作（导入用，字段无效时静默跳过）
+    void Rainbow::restoreFrameAction(JSValueConst jact) {
+        JSValue jv ;
+        uint32_t frame = 0 ;
+        int64_t jumpTo = -1, playTo = -1 ;
+        int jumpCount = 1, playCount = 1 ;
+        uint8_t mask = 0 ;
+
+        jv = JS_GetPropertyStr(ctx, jact, "frame") ;
+        JS_ToUint32(ctx, &frame, jv) ;
+        JS_FreeValue(ctx, jv) ;
+
+        jv = JS_GetPropertyStr(ctx, jact, "jumpTo") ;
+        if(JS_IsNumber(jv)) {
+            JS_ToInt64(ctx, &jumpTo, jv) ;
+            if(jumpTo>=0) {
+                mask |= Timeline::ACTION_JUMP ;
+            }
+        }
+        JS_FreeValue(ctx, jv) ;
+        jv = JS_GetPropertyStr(ctx, jact, "jumpCount") ;
+        if(JS_IsNumber(jv)) {
+            JS_ToInt32(ctx, &jumpCount, jv) ;
+        }
+        JS_FreeValue(ctx, jv) ;
+
+        jv = JS_GetPropertyStr(ctx, jact, "playTo") ;
+        if(JS_IsNumber(jv)) {
+            JS_ToInt64(ctx, &playTo, jv) ;
+            if(playTo>=0) {
+                mask |= Timeline::ACTION_PLAY ;
+            }
+        }
+        JS_FreeValue(ctx, jv) ;
+        jv = JS_GetPropertyStr(ctx, jact, "playCount") ;
+        if(JS_IsNumber(jv)) {
+            JS_ToInt32(ctx, &playCount, jv) ;
+        }
+        JS_FreeValue(ctx, jv) ;
+
+        if(mask) {
+            timeline->setFrameAction(frame, mask, jumpTo, jumpCount, playTo, playCount) ;
+        }
     }
 
     /**
@@ -746,6 +808,26 @@ namespace be::driver::ws2812b{
                     that->restoreKeyframe(jkf) ;
                 }
                 JS_FreeValue(ctx, jkf) ;
+            }
+        }
+        JS_FreeValue(ctx, v) ;
+
+        // 4b. 恢复帧动作（jumpTo/playTo；有帧动作时也需创建时间线）
+        v = JS_GetPropertyStr(ctx, argv[0], "frameActions") ;
+        if(JS_IsArray(ctx, v)) {
+            JSValue jslen = JS_GetPropertyStr(ctx, v, "length") ;
+            uint32_t count = 0 ;
+            JS_ToUint32(ctx, &count, jslen) ;
+            JS_FreeValue(ctx, jslen) ;
+            if(count>0) {
+                that->ensureTimeline() ;
+            }
+            for(uint32_t i=0; i<count; i++) {
+                JSValue jact = JS_GetPropertyUint32(ctx, v, i) ;
+                if(JS_IsObject(jact)) {
+                    that->restoreFrameAction(jact) ;
+                }
+                JS_FreeValue(ctx, jact) ;
             }
         }
         JS_FreeValue(ctx, v) ;

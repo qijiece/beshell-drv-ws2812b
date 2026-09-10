@@ -1,5 +1,9 @@
 #include "Strip.hpp"
+#ifdef ESP_PLATFORM
 #include "led_strip_rmt.h"
+#else
+#include "led_strip_pc.h"
+#endif
 #include <cmath>
 
 using namespace std ;
@@ -70,7 +74,7 @@ namespace be::driver::ws2812b{
      * @module ws2812b
      * @extends NativeClass
      */
-    DEFINE_NCLASS_META(Strip, NativeClass)
+    DEFINE_NCLASS_META(Strip, DriverClass)
     std::vector<JSCFunctionListEntry> Strip::methods = {
         JS_CFUNC_DEF("setup", 1, Strip::setup),
         JS_CFUNC_DEF("setPixel", 4, Strip::setPixel),
@@ -83,7 +87,7 @@ namespace be::driver::ws2812b{
     } ;
 
     Strip::Strip(JSContext * ctx, JSValue _jsobj)
-        : NativeClass(ctx,build(ctx,_jsobj))
+        : DriverClass(ctx,build(ctx,_jsobj))
     {
     }
     Strip::~Strip() {
@@ -117,7 +121,7 @@ namespace be::driver::ws2812b{
             led_strip_del(led_strip) ;
             led_strip = nullptr ;
         }
-        if(pin==GPIO_NUM_NC || length<1) {
+        if(pin<0 || length<1) {
             return ESP_ERR_INVALID_STATE ;
         }
 
@@ -131,6 +135,7 @@ namespace be::driver::ws2812b{
         };
         strip_config.flags.invert_out = false ;
 
+#ifdef ESP_PLATFORM
         // LED strip backend configuration: RMT
         led_strip_rmt_config_t rmt_config = {
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -144,6 +149,10 @@ namespace be::driver::ws2812b{
         rmt_config.flags.with_dma = false ;
 
         return led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip) ;
+#else
+        // PC 端：软件帧缓冲后端
+        return led_strip_new_pc_device(&strip_config, &led_strip) ;
+#endif
     }
 
     /**
@@ -189,8 +198,8 @@ namespace be::driver::ws2812b{
             JSTHROW("length must be between 1 and 1024")
         }
         that->length = (int)length ;
-        gpio_num_t GET_GPIO_PROP(argv[0], "pin", pin,  )
-        that->pin = pin ;
+        int32_t GET_INT32_PROP(argv[0], "pin", pin,  )
+        that->pin = (int)pin ;
         GET_BOOL_PROP_OPT(argv[0], "loop", that->loop, false)
 
         if(that->initStrip()!= ESP_OK) {
@@ -422,7 +431,7 @@ namespace be::driver::ws2812b{
         int32_t tmp ;
         v = JS_GetPropertyStr(ctx, cfg, "pin") ;
         if(JS_IsNumber(v) && JS_ToInt32(ctx, &tmp, v)==0) {
-            pin = (gpio_num_t)tmp ;
+            pin = tmp ;
         }
         JS_FreeValue(ctx, v) ;
         v = JS_GetPropertyStr(ctx, cfg, "length") ;
@@ -435,7 +444,7 @@ namespace be::driver::ws2812b{
             loop = JS_ToBool(ctx, v) ;
         }
         JS_FreeValue(ctx, v) ;
-        if(pin!=GPIO_NUM_NC && length>0) {
+        if(pin>=0 && length>0) {
             initStrip() ;
         }
     }

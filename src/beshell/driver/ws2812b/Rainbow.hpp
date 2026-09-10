@@ -1,6 +1,6 @@
 #pragma once
 
-#include <beshell/NativeClass.hpp>
+#include <beshell/driver/DriverClass.hpp>
 #include <beshell/module/animator/Timeline.hpp>
 #include "Strip.hpp"
 #include "Section.hpp"
@@ -18,7 +18,7 @@ namespace be::driver::ws2812b{
     // 在有属性实际变更的帧自动重绘灯带：
     // strip.clear() → 各分段 drawTo() → strip.flush()。
     //（文档注释见 Rainbow.cpp）
-    class Rainbow: public be::NativeClass {
+    class Rainbow: public be::driver::DriverClass {
         DECLARE_NCLASS_META
         friend class Section ;                                  // Section 关键帧路径需访问 timeline
     private:
@@ -61,6 +61,8 @@ namespace be::driver::ws2812b{
     private:
         // 从配置对象恢复一个关键帧（导入用，不抛异常）
         void restoreKeyframe(JSValueConst jkf) ;
+        // 从配置对象恢复一个帧动作（jumpTo/playTo，导入用，不抛异常）
+        void restoreFrameAction(JSValueConst jact) ;
 
     public:
         Rainbow(JSContext * ctx, JSValue _jsobj=JS_NULL) ;
