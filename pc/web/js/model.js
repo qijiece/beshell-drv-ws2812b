@@ -58,6 +58,16 @@ export const TRANSITIONS = [
     },
 ];
 
+// 可点击编辑的颜色端点（预览区首/末灯珠 → 快捷面板）。
+// 4 色模型：起点=主体 h0，终点=主体 h1；前/后阴影终点各自独立。
+// 键值与 render.js 命中结果对齐：body-start / body-end / front-end / back-end。
+export const ENDPOINTS = {
+    'body-start': { label: '起点色', h: 'h0', s: 's0', v: 'v0' },
+    'body-end':   { label: '终点色', h: 'h1', s: 's1', v: 'v1' },
+    'front-end':  { label: '前阴影终点', h: 'frontH1', s: 'frontS1', v: 'frontV1' },
+    'back-end':   { label: '后阴影终点', h: 'backH1', s: 'backS1', v: 'backV1' },
+};
+
 // 与 C++ (int)(x+0.5) 等价的取整（trunc 向零）
 export function cRound(v) { return Math.trunc(v + 0.5); }
 

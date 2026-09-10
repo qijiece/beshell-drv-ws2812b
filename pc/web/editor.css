@@ -127,6 +127,30 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .tt-hint { color: var(--fg3); font-size: 10px; margin-top: 4px; }
 .tt-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--border); }
 
+/* ---------- 预览区快捷面板（首/末灯珠 → 端点色编辑） ---------- */
+.qp-panel {
+    position: absolute;
+    z-index: 200;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+    min-width: 184px;
+}
+.qp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.qp-title { color: var(--fg); font-weight: 700; font-size: 12px; }
+.qp-close { border: none; background: none; color: var(--fg3); padding: 0 4px; font-size: 14px; cursor: pointer; }
+.qp-close:hover { color: var(--danger); }
+.qp-swatch-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.qp-swatch { width: 26px; height: 16px; border-radius: 3px; border: 1px solid var(--border); }
+.qp-hex { color: var(--fg2); font-size: 11px; font-family: var(--mono); }
+.qp-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--fg2); font-size: 12px; margin-bottom: 4px; }
+.qp-field input[type="number"] {
+    width: 64px; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; font: inherit;
+}
+
 /* ---------- 侧边栏 ---------- */
 #sidebar .sb-sections { flex: 0 0 auto; border-bottom: 1px solid var(--border); }
 #sidebar .sb-header {

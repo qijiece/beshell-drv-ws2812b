@@ -16,6 +16,7 @@ export class PreviewRenderer {
         this.dragging = false;
         this._drag = null;             // 分段拖动状态 {kind:'move'|'resizeStart'|'resizeEnd', ...}
         this._hoverHandle = null;      // 'start' | 'end' | null
+        this._hoverShadow = null;      // 'front' | 'back' | null
         this._stripDrag = null;        // 灯带拉伸状态 {startLength, startX, scale, pitch}
         this._hoverStripHandle = false;
 
@@ -156,20 +157,30 @@ export class PreviewRenderer {
 
     // ---------- 分段拖动 / 调长度 ----------
 
-    // 选中分段在当前帧的屏幕范围（body 带 + 两端）
+    // 选中分段在当前帧的屏幕范围（body 带 + 两端 + 前后阴影外缘）
     _sectionMetrics(sec, frame) {
         const { layout } = this.getState();
         const pitch = layout.ledW + layout.spacing;
         const x = evalProp(sec, 'x', frame);
         const len = evalProp(sec, 'len', frame);
+        const shadowFront = evalProp(sec, 'shadowFront', frame);
+        const shadowBack = evalProp(sec, 'shadowBack', frame);
         const xi = cRound(x);                 // 首个渲染 LED 下标
         const n = Math.max(1, cRound(len));   // 渲染 LED 数量
+        const frontCount = Math.max(0, cRound(shadowFront));
+        const backCount = Math.max(0, cRound(shadowBack));
         const leftWorld = xi * pitch;
         const rightWorld = (xi + n - 1) * pitch + layout.ledW;  // 含最后一颗 LED 宽度
+        const frontWorld = (xi - frontCount) * pitch;           // 前阴影最外缘
+        const backWorld = (xi + n + backCount - 1) * pitch + layout.ledW;  // 后阴影最外缘
         const sxScreen = leftWorld * this.scale + this.tx;
         const exScreen = rightWorld * this.scale + this.tx;
+        const frontScreen = frontWorld * this.scale + this.tx;
+        const backScreen = backWorld * this.scale + this.tx;
         const halfH = Math.max(14, layout.ledH * this.scale * 0.5 + 8);
-        return { x, len, pitch, sxScreen, exScreen, y0: this.ty - halfH, y1: this.ty + halfH };
+        return { x, len, pitch, xi, n, frontCount, backCount,
+            sxScreen, exScreen, frontScreen, backScreen,
+            y0: this.ty - halfH, y1: this.ty + halfH };
     }
 
     _handleAt(mx, my) {
@@ -184,6 +195,18 @@ export class PreviewRenderer {
         return null;
     }
 
+    // 前/后阴影长度 handle（前上、后下，与 body 两端 handle 垂直错开）
+    _shadowHandleAt(mx, my) {
+        const st = this.getState();
+        const sec = st.project.sections[st.selection];
+        if (!sec) return null;
+        const m = this._sectionMetrics(sec, st.frame);
+        const dy = 36, hw = 8, hh = 7;
+        if (Math.abs(my - (this.ty - dy)) <= hh && Math.abs(mx - m.frontScreen) <= hw) return 'front';
+        if (Math.abs(my - (this.ty + dy)) <= hh && Math.abs(mx - m.backScreen) <= hw) return 'back';
+        return null;
+    }
+
     // 命中最上层分段（后绘制者优先），返回下标；无命中返回 -1
     _bodyHit(mx, my) {
         const st = this.getState();
@@ -194,11 +217,50 @@ export class PreviewRenderer {
         return -1;
     }
 
+    // 某灯珠下标是否为该分段的可编辑端点（主体首/末、前/后阴影末端）
+    _sectionEndpoint(sec, frame, ledIdx) {
+        const x = evalProp(sec, 'x', frame);
+        const lenV = evalProp(sec, 'len', frame);
+        const shadowFront = evalProp(sec, 'shadowFront', frame);
+        const shadowBack = evalProp(sec, 'shadowBack', frame);
+        const xi = cRound(x);
+        const n = Math.max(1, cRound(lenV));
+        const frontCount = Math.max(0, cRound(shadowFront));
+        const backCount = Math.max(0, cRound(shadowBack));
+        if (ledIdx === xi) return 'body-start';
+        if (ledIdx === xi + n - 1) return 'body-end';
+        if (frontCount > 0 && ledIdx === xi - frontCount) return 'front-end';
+        if (backCount > 0 && ledIdx === xi + n + backCount - 1) return 'back-end';
+        return null;
+    }
+
+    // 命中最上层分段的端点灯珠，返回 { index, endpoint } 或 null
+    _endpointAt(mx, my) {
+        const st = this.getState();
+        const idx = this._ledAt(mx, my);
+        if (idx === null) return null;
+        for (let i = st.project.sections.length - 1; i >= 0; i--) {
+            const ep = this._sectionEndpoint(st.project.sections[i], st.frame, idx);
+            if (ep) return { index: i, endpoint: ep };
+        }
+        return null;
+    }
+
     _drawSectionOverlay(ctx, frame) {
         const st = this.getState();
         const sec = st.project.sections[st.selection];
         if (!sec) return;
         const m = this._sectionMetrics(sec, frame);
+
+        // 前/后阴影范围（半透明底色，区分阴影与主体）
+        if (m.frontCount > 0) {
+            ctx.fillStyle = 'rgba(179,136,255,0.10)';
+            ctx.fillRect(m.frontScreen, m.y0, m.sxScreen - m.frontScreen, m.y1 - m.y0);
+        }
+        if (m.backCount > 0) {
+            ctx.fillStyle = 'rgba(255,171,64,0.10)';
+            ctx.fillRect(m.exScreen, m.y0, m.backScreen - m.exScreen, m.y1 - m.y0);
+        }
 
         // 选中分段虚线轮廓
         ctx.strokeStyle = 'rgba(77,159,255,0.55)';
@@ -221,6 +283,28 @@ export class PreviewRenderer {
         };
         if (active('start')) handle(m.sxScreen, true);
         if (active('end')) handle(m.exScreen, true);
+
+        // 阴影长度 handle（前上/后下，颜色区分），始终显示以便从 0 拖出阴影
+        const shadowHot = (which) =>
+            this._hoverShadow === which ||
+            (this._drag && this._drag.kind === (which === 'front' ? 'resizeFront' : 'resizeBack'));
+        const sDy = 36, sW = 3, sH = 7;
+        const shadowHandle = (x, y, hot, color) => {
+            ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+            ctx.setLineDash([2, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x, this.ty);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = hot ? '#ffd166' : color;
+            ctx.fillRect(x - sW, y - sH, sW * 2, sH * 2);
+            ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x - sW, y - sH, sW * 2, sH * 2);
+        };
+        shadowHandle(m.frontScreen, this.ty - sDy, shadowHot('front'), '#b388ff');
+        shadowHandle(m.backScreen, this.ty + sDy, shadowHot('back'), '#ffab40');
     }
 
     // ---------- 灯带拉伸（右端 handle 改变 strip.length） ----------
@@ -272,6 +356,21 @@ export class PreviewRenderer {
             return;
         }
 
+        // 前/后阴影长度 handle
+        const shadowHandle = this._shadowHandleAt(mx, my);
+        if (shadowHandle) {
+            const sec = st.project.sections[st.selection];
+            const m = this._sectionMetrics(sec, st.frame);
+            this._drag = {
+                kind: shadowHandle === 'front' ? 'resizeFront' : 'resizeBack',
+                index: st.selection,
+                startX: mx, startXi: m.xi, startNi: m.n,
+                startFront: m.frontCount, startBack: m.backCount,
+                scale: this.scale, pitch: m.pitch,
+            };
+            return;
+        }
+
         const handle = this._handleAt(mx, my);
         if (handle) {
             const sec = st.project.sections[st.selection];
@@ -284,6 +383,15 @@ export class PreviewRenderer {
             };
             return;
         }
+
+        // 端点灯珠（首/末/阴影末端）→ 快捷面板
+        const ep = this._endpointAt(mx, my);
+        if (ep) {
+            if (this.cb.onSelect && ep.index !== st.selection) this.cb.onSelect(ep.index);
+            if (this.cb.onEndpointEdit) this.cb.onEndpointEdit(ep.index, ep.endpoint, mx, my);
+            return;
+        }
+
         const hit = this._bodyHit(mx, my);
         if (hit >= 0) {
             if (this.cb.onSelect && hit !== st.selection) this.cb.onSelect(hit);
@@ -315,6 +423,12 @@ export class PreviewRenderer {
             this._emit(d.index, 'x', d.startXi + dI);
         } else if (d.kind === 'resizeEnd') {
             this._emit(d.index, 'len', Math.max(1, d.startNi + dI));
+        } else if (d.kind === 'resizeFront') {
+            // 前阴影向左延伸：向左拖（dI<0）增大长度
+            this._emit(d.index, 'shadowFront', Math.max(0, d.startFront - dI));
+        } else if (d.kind === 'resizeBack') {
+            // 后阴影向右延伸：向右拖（dI>0）增大长度
+            this._emit(d.index, 'shadowBack', Math.max(0, d.startBack + dI));
         } else { // resizeStart：右端固定，起点移动
             const right = d.startXi + d.startNi;             // 右端（LED 计数）不变
             let newXi = d.startXi + dI;
@@ -374,6 +488,16 @@ export class PreviewRenderer {
             }
             if (this._hoverStripHandle) { this._hoverStripHandle = false; this.render(); }
 
+            // 0.5) 前/后阴影长度 handle
+            const sh = this._shadowHandleAt(mx, my);
+            if (sh !== null) {
+                if (this._hoverShadow !== sh) { this._hoverShadow = sh; this.render(); }
+                this.tooltip.style.display = 'none';
+                cv.style.cursor = 'ew-resize';
+                return;
+            }
+            if (this._hoverShadow !== null) { this._hoverShadow = null; this.render(); }
+
             // 1) 选中分段两端长 handle（调长度）
             const handle = this._handleAt(mx, my);
             if (handle !== null) {
@@ -412,12 +536,14 @@ export class PreviewRenderer {
             if (this._drag) {
                 this._drag = null;
                 if (this._hoverHandle) { this._hoverHandle = null; this.render(); }
+                if (this._hoverShadow) { this._hoverShadow = null; this.render(); }
             }
         });
         cv.addEventListener('contextmenu', (ev) => ev.preventDefault());
         cv.addEventListener('mouseleave', () => {
             this.tooltip.style.display = 'none';
             if (this._hoverHandle !== null) { this._hoverHandle = null; this.render(); }
+            if (this._hoverShadow !== null) { this._hoverShadow = null; this.render(); }
             if (this._hoverStripHandle) { this._hoverStripHandle = false; this.render(); }
         });
     }

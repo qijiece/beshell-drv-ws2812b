@@ -6,6 +6,7 @@ import {
 import { PreviewRenderer } from './render.js';
 import { TimelineView } from './timeline.js';
 import { SidebarView } from './sidebar.js';
+import { QuickPanel } from './quickpanel.js';
 import { loadWasm } from './wasm.js';
 
 const PRESETS = [
@@ -25,7 +26,7 @@ const state = {
     framePixels: [],
 };
 
-let preview, timeline, sidebar, wasm = null;
+let preview, timeline, sidebar, quickPanel, wasm = null;
 
 function setFrame(f) {
     // 允许超出当前结束帧（在范围外放置关键帧会自动扩展动画时长）
@@ -38,9 +39,11 @@ function refresh() {
     if (preview) preview.render();
     if (timeline) timeline.render();
     if (sidebar) sidebar.sync();
+    if (quickPanel) quickPanel.sync();
 }
 
 function refreshAll() {
+    if (quickPanel) quickPanel.close();
     refresh();
     if (sidebar) sidebar.render();
 }
@@ -222,6 +225,9 @@ async function main() {
             syncLayoutPanel();
             refresh();
         },
+        onEndpointEdit: (i, endpointKey, mx, my) => {
+            quickPanel.open(i, endpointKey, mx, my);
+        },
     });
     timeline = new TimelineView(document.querySelector('#timeline'), getState, {
         onScrub: setFrame,
@@ -245,6 +251,9 @@ async function main() {
         onRemove: removeSection,
         onSelect: selectSection,
         onReorder: reorderSection,
+        onChange: refresh,
+    });
+    quickPanel = new QuickPanel(document.querySelector('#preview'), getState, {
         onChange: refresh,
     });
 
