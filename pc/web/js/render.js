@@ -19,6 +19,8 @@ export class PreviewRenderer {
         this._hoverShadow = null;      // 'front' | 'back' | null
         this._stripDrag = null;        // 灯带拉伸状态 {startLength, startX, scale, pitch}
         this._hoverStripHandle = false;
+        this._hoverLed = null;           // 当前悬停的灯珠下标（端点高亮/图标提示用）
+        this._hoverEndpoint = null;      // 悬停端点键（'body-start' 等）或 null
 
         this.tooltip = document.createElement('div');
         this.tooltip.className = 'preview-tooltip';
@@ -109,6 +111,8 @@ export class PreviewRenderer {
 
         this._drawSectionOverlay(ctx, frame);
         this._drawStripHandle(ctx);
+        this._drawEndpointIcons(ctx, frame);
+        this._drawEndpointHover(ctx);
     }
 
     _drawGrid(w, h) {
@@ -195,15 +199,16 @@ export class PreviewRenderer {
         return null;
     }
 
-    // 前/后阴影长度 handle（前上、后下，与 body 两端 handle 垂直错开）
+    // 前/后阴影长度 handle（均在下方，前、后屏幕 x 不同故互不重叠）
     _shadowHandleAt(mx, my) {
         const st = this.getState();
         const sec = st.project.sections[st.selection];
         if (!sec) return null;
         const m = this._sectionMetrics(sec, st.frame);
         const dy = 36, hw = 8, hh = 7;
-        if (Math.abs(my - (this.ty - dy)) <= hh && Math.abs(mx - m.frontScreen) <= hw) return 'front';
-        if (Math.abs(my - (this.ty + dy)) <= hh && Math.abs(mx - m.backScreen) <= hw) return 'back';
+        if (my < this.ty + dy - hh || my > this.ty + dy + hh) return null;
+        if (Math.abs(mx - m.frontScreen) <= hw) return 'front';
+        if (Math.abs(mx - m.backScreen) <= hw) return 'back';
         return null;
     }
 
@@ -246,6 +251,60 @@ export class PreviewRenderer {
         return null;
     }
 
+    // 悬停可点击端点灯珠：一圈亮色描边（轻微悬停样式，任何分段端点均可）
+    _drawEndpointHover(ctx) {
+        if (this._hoverEndpoint === null || this._hoverLed === null) return;
+        const r = this.ledScreenRect(this._hoverLed);
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.lineWidth = 2;
+        const g = 2;
+        this._roundRect(ctx, r.x - g, r.y - g, r.w + g * 2, r.h + g * 2, 4 * this.scale);
+        ctx.stroke();
+    }
+
+    // 选中分段各端点灯珠 { idx, endpoint }
+    _endpointLeds(sec, frame) {
+        const x = evalProp(sec, 'x', frame);
+        const lenV = evalProp(sec, 'len', frame);
+        const sf = evalProp(sec, 'shadowFront', frame);
+        const sb = evalProp(sec, 'shadowBack', frame);
+        const xi = cRound(x);
+        const n = Math.max(1, cRound(lenV));
+        const frontCount = Math.max(0, cRound(sf));
+        const backCount = Math.max(0, cRound(sb));
+        const out = [];
+        out.push({ idx: xi, endpoint: 'body-start' });
+        if (n > 1) out.push({ idx: xi + n - 1, endpoint: 'body-end' });
+        if (frontCount > 0) out.push({ idx: xi - frontCount, endpoint: 'front-end' });
+        if (backCount > 0) out.push({ idx: xi + n + backCount - 1, endpoint: 'back-end' });
+        return out;
+    }
+
+    // 端点灯珠：头顶位置小图标 + 悬停轻微高亮（仅选中分段）
+    _drawEndpointIcons(ctx, frame) {
+        const st = this.getState();
+        const sec = st.project.sections[st.selection];
+        if (!sec) return;
+        const eps = this._endpointLeds(sec, frame);
+        const size = 5;
+        for (const ep of eps) {
+            const r = this.ledScreenRect(ep.idx);
+            const cx = r.x + r.w / 2;
+            // 头顶倒三角小图标（指向灯珠，颜色表端点类型）
+            const yTop = r.y - size - 3;
+            ctx.fillStyle = '#4d9fff';   // 端点图标统一主强调色
+            ctx.beginPath();
+            ctx.moveTo(cx, yTop + size);
+            ctx.lineTo(cx - size, yTop);
+            ctx.lineTo(cx + size, yTop);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+    }
+
     _drawSectionOverlay(ctx, frame) {
         const st = this.getState();
         const sec = st.project.sections[st.selection];
@@ -254,11 +313,11 @@ export class PreviewRenderer {
 
         // 前/后阴影范围（半透明底色，区分阴影与主体）
         if (m.frontCount > 0) {
-            ctx.fillStyle = 'rgba(179,136,255,0.10)';
+            ctx.fillStyle = 'rgba(77,159,255,0.10)';
             ctx.fillRect(m.frontScreen, m.y0, m.sxScreen - m.frontScreen, m.y1 - m.y0);
         }
         if (m.backCount > 0) {
-            ctx.fillStyle = 'rgba(255,171,64,0.10)';
+            ctx.fillStyle = 'rgba(77,159,255,0.10)';
             ctx.fillRect(m.exScreen, m.y0, m.backScreen - m.exScreen, m.y1 - m.y0);
         }
 
@@ -284,7 +343,7 @@ export class PreviewRenderer {
         if (active('start')) handle(m.sxScreen, true);
         if (active('end')) handle(m.exScreen, true);
 
-        // 阴影长度 handle（前上/后下，颜色区分），始终显示以便从 0 拖出阴影
+        // 阴影长度 handle（均在下方，颜色区分），始终显示以便从 0 拖出阴影
         const shadowHot = (which) =>
             this._hoverShadow === which ||
             (this._drag && this._drag.kind === (which === 'front' ? 'resizeFront' : 'resizeBack'));
@@ -303,8 +362,8 @@ export class PreviewRenderer {
             ctx.lineWidth = 1;
             ctx.strokeRect(x - sW, y - sH, sW * 2, sH * 2);
         };
-        shadowHandle(m.frontScreen, this.ty - sDy, shadowHot('front'), '#b388ff');
-        shadowHandle(m.backScreen, this.ty + sDy, shadowHot('back'), '#ffab40');
+        shadowHandle(m.frontScreen, this.ty + sDy, shadowHot('front'), '#4d9fff');
+        shadowHandle(m.backScreen, this.ty + sDy, shadowHot('back'), '#4d9fff');
     }
 
     // ---------- 灯带拉伸（右端 handle 改变 strip.length） ----------
@@ -327,7 +386,7 @@ export class PreviewRenderer {
         const x = this._stripRightScreen();
         const hw = 3, hh = 34;
         const hot = this._hoverStripHandle || this._stripDrag;
-        ctx.fillStyle = hot ? '#3ecf8e' : 'rgba(62,207,142,0.55)';
+        ctx.fillStyle = hot ? '#ffd166' : 'rgba(77,159,255,0.55)';
         ctx.fillRect(x - hw, this.ty - hh, hw * 2, hh * 2);
         ctx.strokeStyle = 'rgba(0,0,0,0.5)';
         ctx.lineWidth = 1;
@@ -479,39 +538,57 @@ export class PreviewRenderer {
             const rect = cv.getBoundingClientRect();
             const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
 
+            // 依次判定悬停目标（优先级：灯带拉伸 > 阴影长度 > 长 handle > 端点灯珠 > LED > body）
+            const stripHandle = this._stripHandleAt(mx, my);
+            const sh = stripHandle ? null : this._shadowHandleAt(mx, my);
+            const handle = (stripHandle || sh !== null) ? null : this._handleAt(mx, my);
+            const idx = (stripHandle || sh !== null || handle !== null) ? null : this._ledAt(mx, my);
+            const epHit = (idx !== null) ? this._endpointAt(mx, my) : null;
+            const epKey = epHit ? epHit.endpoint : null;
+
+            // 统一提交悬停态（有变化才重绘）
+            if (this._hoverStripHandle !== stripHandle ||
+                this._hoverShadow !== sh ||
+                this._hoverHandle !== handle ||
+                this._hoverLed !== idx ||
+                this._hoverEndpoint !== epKey) {
+                this._hoverStripHandle = stripHandle;
+                this._hoverShadow = sh;
+                this._hoverHandle = handle;
+                this._hoverLed = idx;
+                this._hoverEndpoint = epKey;
+                this.render();
+            }
+
             // 0) 灯带右端拉伸 handle
-            if (this._stripHandleAt(mx, my)) {
-                if (!this._hoverStripHandle) { this._hoverStripHandle = true; this.render(); }
-                this.tooltip.style.display = 'none';
+            if (stripHandle) {
+                this._showTextTip(`灯带长度: ${this.getState().project.strip.length}`, ev.clientX, ev.clientY);
                 cv.style.cursor = 'ew-resize';
                 return;
             }
-            if (this._hoverStripHandle) { this._hoverStripHandle = false; this.render(); }
 
             // 0.5) 前/后阴影长度 handle
-            const sh = this._shadowHandleAt(mx, my);
             if (sh !== null) {
-                if (this._hoverShadow !== sh) { this._hoverShadow = sh; this.render(); }
-                this.tooltip.style.display = 'none';
+                const sst = this.getState();
+                const ssec = sst.project.sections[sst.selection];
+                const sm = ssec && this._sectionMetrics(ssec, sst.frame);
+                const sname = sh === 'front' ? '前阴影长度' : '后阴影长度';
+                const scount = sm ? (sh === 'front' ? sm.frontCount : sm.backCount) : 0;
+                this._showTextTip(`${sname}: ${scount}`, ev.clientX, ev.clientY);
                 cv.style.cursor = 'ew-resize';
                 return;
             }
-            if (this._hoverShadow !== null) { this._hoverShadow = null; this.render(); }
 
             // 1) 选中分段两端长 handle（调长度）
-            const handle = this._handleAt(mx, my);
             if (handle !== null) {
-                if (this._hoverHandle !== handle) { this._hoverHandle = handle; this.render(); }
-                this.tooltip.style.display = 'none';
+                this._showTextTip(handle === 'start' ? '起点（拖动调整位置/长度）' : '终点（拖动调整长度）', ev.clientX, ev.clientY);
                 cv.style.cursor = 'ew-resize';
                 return;
             }
-            if (this._hoverHandle !== null) { this._hoverHandle = null; this.render(); }
 
-            // 2) LED 悬停 tooltip（在分段 body 上时同时给出 move 光标）
-            const idx = this._ledAt(mx, my);
+            // 2) LED 悬停 tooltip（端点可点击 → pointer；body 上可拖动 → move；body 外 → pointer）
             if (idx !== null) {
-                cv.style.cursor = this._bodyHit(mx, my) >= 0 ? 'move' : 'pointer';
+                cv.style.cursor = (epKey !== null || this._bodyHit(mx, my) < 0) ? 'pointer' : 'move';
                 const px = this.getState().framePixels;
                 this._showTooltip(idx, px[idx], ev.clientX, ev.clientY);
                 return;
@@ -538,13 +615,20 @@ export class PreviewRenderer {
                 if (this._hoverHandle) { this._hoverHandle = null; this.render(); }
                 if (this._hoverShadow) { this._hoverShadow = null; this.render(); }
             }
+            if (this._hoverLed !== null) { this._hoverLed = null; this._hoverEndpoint = null; this.render(); }
         });
         cv.addEventListener('contextmenu', (ev) => ev.preventDefault());
         cv.addEventListener('mouseleave', () => {
             this.tooltip.style.display = 'none';
-            if (this._hoverHandle !== null) { this._hoverHandle = null; this.render(); }
-            if (this._hoverShadow !== null) { this._hoverShadow = null; this.render(); }
-            if (this._hoverStripHandle) { this._hoverStripHandle = false; this.render(); }
+            if (this._hoverHandle !== null || this._hoverShadow !== null ||
+                this._hoverStripHandle || this._hoverLed !== null) {
+                this._hoverHandle = null;
+                this._hoverShadow = null;
+                this._hoverStripHandle = false;
+                this._hoverLed = null;
+                this._hoverEndpoint = null;
+                this.render();
+            }
         });
     }
 
@@ -557,6 +641,19 @@ export class PreviewRenderer {
             <div class="tt-row"><span class="tt-swatch" style="background:${hex}"></span>${hex.toUpperCase()}</div>
             <div class="tt-row">RGB ${fmtRGB(r, g, b)}</div>
             <div class="tt-row">HSV ${fmtHSV(h, s, v)}</div>`;
+        this.tooltip.style.display = 'block';
+        const rect = this.canvas.getBoundingClientRect();
+        let left = cx - rect.left + 14, top = cy - rect.top + 14;
+        const tw = this.tooltip.offsetWidth, th = this.tooltip.offsetHeight;
+        if (left + tw > rect.width) left = cx - rect.left - tw - 8;
+        if (top + th > rect.height) top = cy - rect.top - th - 8;
+        this.tooltip.style.left = left + 'px';
+        this.tooltip.style.top = top + 'px';
+    }
+
+    // 各类 handle 的悬停提示（纯文本单行）
+    _showTextTip(text, cx, cy) {
+        this.tooltip.innerHTML = `<div class="tt-title">${text}</div>`;
         this.tooltip.style.display = 'block';
         const rect = this.canvas.getBoundingClientRect();
         let left = cx - rect.left + 14, top = cy - rect.top + 14;

@@ -7,6 +7,7 @@ import { PreviewRenderer } from './render.js';
 import { TimelineView } from './timeline.js';
 import { SidebarView } from './sidebar.js';
 import { QuickPanel } from './quickpanel.js';
+import { generateCode } from './codegen.js';
 import { loadWasm } from './wasm.js';
 
 const PRESETS = [
@@ -179,6 +180,102 @@ function importJson(text) {
     if (preview) preview.fit();
 }
 
+// ---------- 导出 beshell 代码（弹窗 + setup 参数） ----------
+
+const EXPORT_SETUP_KEY = 'beshell.ws2812b.exportSetup';
+
+function loadExportSetup() {
+    try {
+        const raw = localStorage.getItem(EXPORT_SETUP_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+}
+
+function saveExportSetup(s) {
+    try { localStorage.setItem(EXPORT_SETUP_KEY, JSON.stringify(s)); } catch (e) {}
+}
+
+function openCodeExport() {
+    const old = document.querySelector('.modal-overlay');
+    if (old) old.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+        <div class="modal">
+            <div class="modal-head">
+                <span class="modal-title">导出 beshell 代码</span>
+                <button class="modal-close" type="button" title="关闭">×</button>
+            </div>
+            <div class="modal-setup">
+                <label class="ms-field">引脚 <input id="code-pin" type="number" min="0" step="1"></label>
+                <label class="ms-field">灯数 <input id="code-length" type="number" min="1" step="1"></label>
+                <label class="ms-field"><input id="code-loop" type="checkbox"> 回环 loop</label>
+            </div>
+            <textarea id="code-output" class="modal-code" spellcheck="false" readonly></textarea>
+            <div class="modal-actions">
+                <button id="code-copy" class="primary" type="button">复制代码</button>
+                <button id="code-close" type="button">关闭</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+
+    const pin = overlay.querySelector('#code-pin');
+    const length = overlay.querySelector('#code-length');
+    const loop = overlay.querySelector('#code-loop');
+    const out = overlay.querySelector('#code-output');
+    const copyBtn = overlay.querySelector('#code-copy');
+
+    const saved = loadExportSetup();
+    pin.value = saved.pin != null ? saved.pin : 8;
+    length.value = state.project.strip.length;
+    loop.checked = saved.loop != null ? !!saved.loop : false;
+
+    const regen = () => {
+        const pinV = parseInt(pin.value, 10);
+        const lenV = parseInt(length.value, 10);
+        const loopV = loop.checked;
+        saveExportSetup({ pin: pinV, loop: loopV });
+        out.value = generateCode(state.project, { pin: pinV, length: lenV, loop: loopV });
+    };
+
+    pin.addEventListener('input', regen);
+    length.addEventListener('input', regen);
+    loop.addEventListener('change', regen);
+
+    const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+    const close = () => {
+        window.removeEventListener('keydown', onKey);
+        overlay.remove();
+    };
+
+    overlay.querySelector('.modal-close').addEventListener('click', close);
+    overlay.querySelector('#code-close').addEventListener('click', close);
+    overlay.addEventListener('mousedown', (ev) => { if (ev.target === overlay) close(); });
+    copyBtn.addEventListener('click', async () => {
+        let ok = false;
+        try {
+            await navigator.clipboard.writeText(out.value);
+            ok = true;
+        } catch (e) {
+            try {
+                out.select();
+                ok = document.execCommand('copy');
+            } catch (_) { ok = false; }
+        }
+        if (ok) {
+            const t = copyBtn.textContent;
+            copyBtn.textContent = '已复制 ✓';
+            setTimeout(() => { copyBtn.textContent = t; }, 1200);
+        } else {
+            alert('复制失败，请手动全选复制');
+        }
+    });
+    window.addEventListener('keydown', onKey);
+
+    regen();
+}
+
 function setWasmStatus(text, ok) {
     const el = document.querySelector('#wasm-status');
     el.textContent = text;
@@ -275,6 +372,7 @@ async function main() {
         ev.target.value = '';
     });
     document.querySelector('#btn-verify').addEventListener('click', verifyEngine);
+    document.querySelector('#btn-export-code').addEventListener('click', openCodeExport);
 
     // WASM 载入（非阻塞；失败不影响编辑器）
     setWasmStatus('WASM 载入中…', false);

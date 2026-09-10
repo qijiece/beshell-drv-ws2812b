@@ -93,12 +93,16 @@ export class EaseMenu {
         this.trigger.classList.add('open');
 
         const rect = this.trigger.getBoundingClientRect();
-        this._list.style.left = rect.left + 'px';
-        this._list.style.width = Math.max(rect.width, 180) + 'px';
+        const listW = Math.min(Math.max(rect.width, 300), window.innerWidth - 16);
+        let left = rect.left;
+        if (left + listW > window.innerWidth - 8) left = Math.max(8, window.innerWidth - listW - 8);
+        this._list.style.left = left + 'px';
+        this._list.style.width = listW + 'px';
         const listH = this._list.offsetHeight;
         let top = rect.bottom + 4;
         if (top + listH > window.innerHeight - 8) top = Math.max(8, rect.top - listH - 4);
         this._list.style.top = top + 'px';
+        this._refreshCurves();
 
         this._onDocDown = (ev) => {
             if (this.root.contains(ev.target) || this._list.contains(ev.target)) return;
@@ -131,13 +135,9 @@ export class EaseMenu {
             item.dataset.name = name;
 
             const cv = document.createElement('canvas');
-            const dpr = window.devicePixelRatio || 1;
-            cv.width = CW * dpr;
-            cv.height = CH * dpr;
-            cv.style.width = CW + 'px';
-            cv.style.height = CH + 'px';
             cv.className = 'em-curve';
-            this._drawCurve(cv, name, null);
+            cv.style.height = CH + 'px';
+            // 宽度由 .em-curve 的 flex 填充决定；后备存储与曲线在 _refreshCurves 按实际宽度绘制
 
             const label = document.createElement('span');
             label.className = 'em-label';
@@ -170,12 +170,28 @@ export class EaseMenu {
         this.onChange(name);
     }
 
+    // 列表入 DOM 后按实际宽度重绘各选项曲线
+    _refreshCurves() {
+        if (!this._list) return;
+        this._list.querySelectorAll('.ease-menu-item').forEach((it) => {
+            const cv = it.querySelector('.em-curve');
+            if (cv) this._drawCurve(cv, it.dataset.name, null);
+        });
+    }
+
     // 绘制曲线；t != null 时叠加动画点与右侧竖向指针（t∈[0,1]）
+    // 宽度按 canvas 实际显示宽度自适应（缓动曲线带尽可能长），高度固定 CH。
     _drawCurve(canvas, name, t) {
         const ctx = canvas.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
+        const W = Math.max(60, canvas.clientWidth || CW);
+        const H = CH;
+        if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+            canvas.width = Math.round(W * dpr);
+            canvas.height = Math.round(H * dpr);
+        }
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, CW, CH);
+        ctx.clearRect(0, 0, W, H);
 
         // 采样并自适应 y 范围（含 Back/Elastic 的越界）
         const pts = [];
@@ -190,17 +206,17 @@ export class EaseMenu {
         const lo = mn - pad, hi = mx + pad;
         const span = (hi - lo) || 1;
 
-        const X = (tt) => 2 + tt * (CW - RAIL - 4);
-        const Y = (v) => CH - 2 - (v - lo) / span * (CH - 4);
-        const rx = CW - RAIL / 2;
+        const X = (tt) => 2 + tt * (W - RAIL - 4);
+        const Y = (v) => H - 2 - (v - lo) / span * (H - 4);
+        const rx = W - RAIL / 2;
 
         // 0 / 1 参考线（虚线感）
         ctx.strokeStyle = 'rgba(255,255,255,0.14)';
         ctx.lineWidth = 1;
         ctx.setLineDash([3, 3]);
         ctx.beginPath();
-        ctx.moveTo(2, Y(0)); ctx.lineTo(CW - RAIL - 2, Y(0));
-        ctx.moveTo(2, Y(1)); ctx.lineTo(CW - RAIL - 2, Y(1));
+        ctx.moveTo(2, Y(0)); ctx.lineTo(W - RAIL - 2, Y(0));
+        ctx.moveTo(2, Y(1)); ctx.lineTo(W - RAIL - 2, Y(1));
         ctx.stroke();
         ctx.setLineDash([]);
 
@@ -219,7 +235,7 @@ export class EaseMenu {
         ctx.strokeStyle = 'rgba(255,255,255,0.18)';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(rx, 2); ctx.lineTo(rx, CH - 2);
+        ctx.moveTo(rx, 2); ctx.lineTo(rx, H - 2);
         ctx.stroke();
 
         // 动画点
