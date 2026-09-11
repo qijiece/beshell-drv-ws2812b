@@ -4,7 +4,7 @@
 // 属性值显示「选中帧的插补计算结果」；编辑即在当前帧写入关键帧（帧 0 写基准值）。
 import {
     NUM_PROPS, EASE_PROPS, TRANSITIONS, evalProp, setKeyframe, cRound,
-    keyframeAt, setKeyframeEase,
+    keyframeAt, setKeyframeEase, isDistinctKeyframe,
     frameActionAt, setFrameAction, removeFrameAction, frameToMs,
 } from './model.js';
 import { EaseMenu } from './easemenu.js';
@@ -476,11 +476,9 @@ export class SidebarView {
         if (playc) playc.value = (act && act.playTo >= 0) ? act.playCount : 1;
     }
 
-    // 某属性在当前帧是否为关键帧（第 0 帧恒为关键帧=原点/基准值）
+    // 某属性在当前帧是否为「有效关键帧」：帧 0 恒为原点；帧>0 需该帧有关键帧且其值与前一个关键帧不同
     _isKeyframe(sec, prop, frame) {
-        if (frame <= 0) return true;
-        const kfs = sec.keyframes[prop];
-        return !!(kfs && kfs.some((k) => k.frame === frame));
+        return isDistinctKeyframe(sec, prop, frame);
     }
 
     _setTweenEase(sec, prop, name, s) {

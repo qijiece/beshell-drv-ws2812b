@@ -233,6 +233,16 @@ function effectiveKfs(section, prop) {
     return [{ frame: 0, value: base, ease: "linear", easeS: 1.70158 }, ...kfs];
 }
 
+// 该属性在指定帧是否为「有效（改变值）」的关键帧——右侧面板紫色高亮依据。
+// 帧 0 恒为原点；帧>0 需该帧有关键帧，且其值与前一个有效关键帧（含帧 0 基准值）不同。
+export function isDistinctKeyframe(section, prop, frame) {
+    if (frame <= 0) return true;
+    const kfs = effectiveKfs(section, prop);
+    const i = kfs.findIndex(k => k.frame === frame);
+    if (i <= 0) return false;
+    return kfs[i].value !== kfs[i - 1].value;
+}
+
 export function evalProp(section, prop, frame) {
     const kfs = effectiveKfs(section, prop);
     const n = kfs.length;
