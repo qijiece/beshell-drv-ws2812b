@@ -130,10 +130,10 @@ export class QuickPanel {
         this._propRow(this._body, { label: '色相', prop: hProp, step: 1, indent: true,
             enable: isEnd ? tr.hEn : null,
             transitionEase: isEnd ? { easeProp: tr.easeH, easeSProp: tr.easeHS } : null });
-        this._propRow(this._body, { label: '饱和', prop: sProp, step: 0.01, indent: true,
+        this._propRow(this._body, { label: '饱和', prop: sProp, step: 1, min: 0, max: 100, indent: true,
             enable: isEnd ? tr.sEn : null,
             transitionEase: isEnd ? { easeProp: tr.easeS, easeSProp: tr.easeSS } : null });
-        this._propRow(this._body, { label: '明度', prop: vProp, step: 0.01, indent: true,
+        this._propRow(this._body, { label: '明度', prop: vProp, step: 1, min: 0, max: 100, indent: true,
             enable: isEnd ? tr.vEn : null,
             transitionEase: isEnd ? { easeProp: tr.easeV, easeSProp: tr.easeVS } : null });
 
@@ -185,6 +185,8 @@ export class QuickPanel {
         const inp = document.createElement('input');
         inp.type = 'number';
         inp.step = String(opts.step != null ? opts.step : 1);
+        if (opts.min !== undefined) inp.min = opts.min;
+        if (opts.max !== undefined) inp.max = opts.max;
         inp.className = 'sb-val-input';
         inp.addEventListener('change', () => {
             const v = parseFloat(inp.value);

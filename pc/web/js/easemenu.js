@@ -93,7 +93,7 @@ export class EaseMenu {
         this.trigger.classList.add('open');
 
         const rect = this.trigger.getBoundingClientRect();
-        const listW = Math.min(Math.max(rect.width, 300), window.innerWidth - 16);
+        const listW = Math.min(Math.max(rect.width, 200), window.innerWidth - 16);
         let left = rect.left;
         if (left + listW > window.innerWidth - 8) left = Math.max(8, window.innerWidth - listW - 8);
         this._list.style.left = left + 'px';

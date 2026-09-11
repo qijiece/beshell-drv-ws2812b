@@ -186,8 +186,8 @@ namespace be::driver::ws2812b{
      * const rainbow = new Rainbow(strip)
      * const sec = rainbow.addSection({
      *     x: 0, len: 8,
-     *     h0: 0, s0: 1, v0: 1,       // 起点：红
-     *     h1: 360, s1: 1, v1: 1,     // 终点：顺时针绕色相环一圈（默认方向）
+     *     h0: 0, s0: 100, v0: 100,   // 起点：红
+     *     h1: 360, s1: 100, v1: 100, // 终点：顺时针绕色相环一圈（默认方向）
      *     easeH: "inOutSine",
      *     shadowFront: 3, shadowFrontEase: "outQuad",
      *     shadowBack: 2
@@ -249,6 +249,9 @@ namespace be::driver::ws2812b{
     Section::Section(JSContext * ctx, JSValue _jsobj)
         : DriverClass(ctx,build(ctx,_jsobj))
     {
+        // 阴影默认淡出到黑（body 起点/终点默认全彩 100；shadow 的 v1 覆盖为 0）
+        front.v1 = 0 ;
+        back.v1 = 0 ;
     }
 
     Section::~Section() {
@@ -324,7 +327,7 @@ namespace be::driver::ws2812b{
      * @property h0:number
      */
     /**
-     * 起点饱和度（0-1）
+     * 起点饱和度（0-100）
      *
      * @component beshell-drv-ws2812b
      * @module ws2812b
@@ -332,7 +335,7 @@ namespace be::driver::ws2812b{
      * @property s0:number
      */
     /**
-     * 起点明度（0-1）
+     * 起点明度（0-100）
      *
      * @component beshell-drv-ws2812b
      * @module ws2812b
@@ -348,7 +351,7 @@ namespace be::driver::ws2812b{
      * @property h1:number
      */
     /**
-     * 终点饱和度（0-1）
+     * 终点饱和度（0-100）
      *
      * @component beshell-drv-ws2812b
      * @module ws2812b
@@ -356,7 +359,7 @@ namespace be::driver::ws2812b{
      * @property s1:number
      */
     /**
-     * 终点明度（0-1）
+     * 终点明度（0-100）
      *
      * @component beshell-drv-ws2812b
      * @module ws2812b
@@ -557,14 +560,19 @@ namespace be::driver::ws2812b{
         // 主体过渡：起点 → 终点（len==1 时退化为点，只用起点色）
         drawTransition(strip, xi, n, +1, 0, n>1 ? (double)(n-1) : 0, body) ;
 
-        // 前阴影过渡：起点向前（索引减小）
+        // 前阴影过渡：起点向前（索引减小），起点色 = 主体起点色（4 色模型，无独立 frontH0）
         if(shadowFront>0) {
-            drawTransition(strip, xi-1, (int)(shadowFront+0.5), -1, 1, shadowFront, front) ;
+            Transition ft = front ;
+            ft.h0 = body.h0 ; ft.s0 = body.s0 ; ft.v0 = body.v0 ;
+            drawTransition(strip, xi-1, (int)(shadowFront+0.5), -1, 1, shadowFront, ft) ;
         }
 
-        // 后阴影过渡：起点向后（索引增大）
+        // 后阴影过渡：起点向后（索引增大），起点色 = 主体终点色
+        //（无主体过渡时终点==起点，等同从起点属性值过渡）
         if(shadowBack>0) {
-            drawTransition(strip, xi+n, (int)(shadowBack+0.5), +1, 1, shadowBack, back) ;
+            Transition bt = back ;
+            bt.h0 = body.h1 ; bt.s0 = body.s1 ; bt.v0 = body.v1 ;
+            drawTransition(strip, xi+n, (int)(shadowBack+0.5), +1, 1, shadowBack, bt) ;
         }
     }
 

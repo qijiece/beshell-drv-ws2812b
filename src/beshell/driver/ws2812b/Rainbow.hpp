@@ -30,6 +30,7 @@ namespace be::driver::ws2812b{
         double tlFps = 60 ;                                     // 时间线帧率（创建时生效）
         uint64_t tlFrames = 0 ;                                 // 时间线总帧数（创建时生效）
         bool tlRepeat = false ;                                 // 时间线是否循环（创建时生效）
+        int64_t tlRepeatCount = -1 ;                            // 额外重播次数（-1=无限；创建时生效）
         std::vector<JSValue> sections ;                         // 分段列表（持有 jsobj 计数）
 
         // 播放期间的自锚（与 Timeline::loopRef/loopObjRef 同款模式）：
@@ -41,7 +42,7 @@ namespace be::driver::ws2812b{
         uint32_t cursorFrame = 0 ;                              // 游标帧号（时间线惰性创建前的暂存；
                                                                 // 时间线存在时经 playAt 同步到 timeline）
 
-        void createTimeline(double fps, uint64_t frames, bool repeat) ;
+        void createTimeline(double fps, uint64_t frames, bool repeat, int64_t repeatCount=-1) ;
         void destroyTimeline() ;
 
         void redraw() ;

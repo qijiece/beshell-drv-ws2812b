@@ -15,8 +15,10 @@ namespace be::driver::ws2812b{
         if(h<0) {
             h += 360.0 ;
         }
-        if(s<0) s = 0 ; else if(s>1) s = 1 ;
-        if(v<0) v = 0 ; else if(v>1) v = 1 ;
+        if(s<0) s = 0 ; else if(s>100) s = 100 ;
+        if(v<0) v = 0 ; else if(v>100) v = 100 ;
+        s /= 100.0 ;
+        v /= 100.0 ;
 
         double c = v * s ;
         double x = c * (1 - fabs(fmod(h/60.0, 2.0) - 1)) ;
@@ -58,7 +60,7 @@ namespace be::driver::ws2812b{
      * strip.setPixel(0, 255, 0, 0)
      * 
      * // HSV 方式设置第二个 LED 为绿色
-     * strip.setPixelHSV(1, 120, 1, 1)
+     * strip.setPixelHSV(1, 120, 100, 100)
      * 
      * // 刷新显示（将数据发送到灯带）
      * strip.flush()
@@ -304,13 +306,13 @@ namespace be::driver::ws2812b{
     /**
      * 以 HSV 方式设置单个像素的颜色
      * 
-     * HSV 到 RGB 的转换在 C++ 侧完成。h 自动取模回卷，s/v 自动截断到 0-1。
+     * HSV 到 RGB 的转换在 C++ 侧完成。h 自动取模回卷，s/v 自动截断到 0-100。
      * 注意：调用此方法后需要调用 flush() 才能将颜色数据发送到灯带。
      * 
      * 示例：
      * ```javascript
-     * strip.setPixelHSV(0, 0, 1, 1)     // 第 0 个 LED 为红色
-     * strip.setPixelHSV(1, 120, 1, 1)   // 第 1 个 LED 为绿色
+     * strip.setPixelHSV(0, 0, 100, 100)     // 第 0 个 LED 为红色
+     * strip.setPixelHSV(1, 120, 100, 100)   // 第 1 个 LED 为绿色
      * strip.flush()
      * ```
      *
@@ -321,8 +323,8 @@ namespace be::driver::ws2812b{
      * @method setPixelHSV
      * @param idx:number 像素索引（从 0 开始；回环模式下越界索引取模回卷）
      * @param h:number 色相（0-360，自动回卷）
-     * @param s:number 饱和度（0-1）
-     * @param v:number 明度（0-1）
+     * @param s:number 饱和度（0-100）
+     * @param v:number 明度（0-100）
      * @return undefined
      * @throws 请先调用 setup()
      */

@@ -10,8 +10,8 @@ namespace be::driver::ws2812b{
     /**
      * HSV 转 RGB（C++ 侧共享 helper）
      * @param h 色相 0-360（自动取模回卷）
-     * @param s 饱和度 0-1（自动截断）
-     * @param v 明度 0-1（自动截断）
+     * @param s 饱和度 0-100（自动截断）
+     * @param v 明度 0-100（自动截断）
      */
     void hsv2rgb(double h, double s, double v, uint8_t & red, uint8_t & green, uint8_t & blue) ;
 

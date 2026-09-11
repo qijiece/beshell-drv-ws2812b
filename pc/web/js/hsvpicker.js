@@ -1,5 +1,5 @@
 // 自定义 HSV 取色器：色相条 + 饱和度/明度方块，联动 RGB。
-// 输出/输入均为 [h(0..360), s(0..1), v(0..1)]。
+// 输出/输入均为 [h(0..360), s(0..100), v(0..100)]。
 import { hsv2rgb, rgb2hsv, rgbToHex } from './color.js';
 
 const STYLE = `
@@ -34,7 +34,7 @@ function ensureStyle() {
 export class HSVPicker {
     constructor(container, onChange) {
         this.onChange = onChange || (() => {});
-        this.h = 0; this.s = 1; this.v = 1;
+        this.h = 0; this.s = 100; this.v = 100;
         ensureStyle();
         this.root = document.createElement('div');
         this.root.className = 'beshell-hsvpick';
@@ -75,25 +75,25 @@ export class HSVPicker {
 
     set(h, s, v, silent) {
         h = ((h % 360) + 360) % 360;
-        s = Math.min(1, Math.max(0, s));
-        v = Math.min(1, Math.max(0, v));
+        s = Math.min(100, Math.max(0, s));
+        v = Math.min(100, Math.max(0, v));
         this.h = h; this.s = s; this.v = v;
         this._update();
         if (!silent) this.onChange(this.h, this.s, this.v);
     }
 
     _update() {
-        const [r, g, b] = hsv2rgb(this.h, 1, 1);
+        const [r, g, b] = hsv2rgb(this.h, 100, 100);
         this.sv.style.background =
             `linear-gradient(to top,#000,transparent),linear-gradient(to right,#fff,rgb(${r},${g},${b}))`;
-        this.svDot.style.left = (this.s * 100) + '%';
-        this.svDot.style.top = ((1 - this.v) * 100) + '%';
+        this.svDot.style.left = this.s + '%';
+        this.svDot.style.top = (100 - this.v) + '%';
         this.hueDot.style.top = ((this.h / 360) * 100) + '%';
         const [rr, gg, bb] = hsv2rgb(this.h, this.s, this.v);
         this.sw.style.background = `rgb(${rr},${gg},${bb})`;
         this.inH.value = Math.round(this.h);
-        this.inS.value = Math.round(this.s * 100);
-        this.inV.value = Math.round(this.v * 100);
+        this.inS.value = Math.round(this.s);
+        this.inV.value = Math.round(this.v);
         this.inR.value = rr; this.inG.value = gg; this.inB.value = bb;
         this.hex.value = rgbToHex(rr, gg, bb);
     }
@@ -105,7 +105,7 @@ export class HSVPicker {
             let y = (ev.clientY - rect.top) / rect.height;
             x = Math.min(1, Math.max(0, x));
             y = Math.min(1, Math.max(0, y));
-            this.set(this.h, x, 1 - y);
+            this.set(this.h, x * 100, (1 - y) * 100);
         };
         this.sv.addEventListener('mousedown', (ev) => {
             pickSV(ev);
@@ -138,8 +138,8 @@ export class HSVPicker {
             });
         };
         num(this.inH, null, (v) => this.h = v);
-        num(this.inS, null, (v) => this.s = v / 100);
-        num(this.inV, null, (v) => this.v = v / 100);
+        num(this.inS, null, (v) => this.s = v);
+        num(this.inV, null, (v) => this.v = v);
         this.inR.addEventListener('change', () => this._fromRGB());
         this.inG.addEventListener('change', () => this._fromRGB());
         this.inB.addEventListener('change', () => this._fromRGB());

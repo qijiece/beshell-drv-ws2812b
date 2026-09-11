@@ -1,6 +1,6 @@
 // 右侧属性侧边：上部分段列表，下部选中分段属性（三列：属性值 | 过渡缓动 | 间补缓动）。
 // 分段有「主体 / 前阴影 / 后阴影」三种渲染过渡，结构与参数完全一致。
-// 每个可过渡/间补属性独享一行；H/S/V 通道有「启用」复选框（仅前端预览，不持久化）。
+// 每个可过渡/间补属性独享一行；H/S/V 通道有「启用」复选框（仅前端预览生效，状态随配置持久化）。
 // 属性值显示「选中帧的插补计算结果」；编辑即在当前帧写入关键帧（帧 0 写基准值）。
 import {
     NUM_PROPS, EASE_PROPS, TRANSITIONS, evalProp, setKeyframe, cRound,
@@ -41,6 +41,7 @@ export class SidebarView {
         this._easeMenus = {};       // easeProp -> EaseMenu（列 2 过渡缓动）
         this._tweenMenus = {};      // prop -> EaseMenu（列 3 间补缓动）
         this._enInputs = {};        // enableProp -> checkbox
+        this._enRowsByProp = {};    // prop -> { enable, startProp }（禁用通道显示起点值并置灰）
         this._ccwInputs = {};       // ccwProp -> checkbox
         this.render();
     }
@@ -147,6 +148,7 @@ export class SidebarView {
         this._easeMenus = {};
         this._tweenMenus = {};
         this._enInputs = {};
+        this._enRowsByProp = {};
         this._ccwInputs = {};
         this._colorBtns = {};
 
@@ -218,6 +220,7 @@ export class SidebarView {
         inp.type = 'number';
         inp.step = String(opts.step != null ? opts.step : 1);
         if (opts.min !== undefined) inp.min = opts.min;
+        if (opts.max !== undefined) inp.max = opts.max;
         inp.className = 'sb-val-input';
         inp.addEventListener('change', () => {
             const v = parseFloat(inp.value);
@@ -226,6 +229,9 @@ export class SidebarView {
         });
         row.appendChild(inp);
         this._numInputs[opts.prop] = inp;
+        if (opts.enable) {
+            this._enRowsByProp[opts.prop] = { enable: opts.enable, startProp: opts.startProp };
+        }
 
         // 列 2：过渡缓动（仅 H/S/V 起点行传入 transitionEase）
         const easeCell = document.createElement('div');
@@ -277,15 +283,15 @@ export class SidebarView {
         if (tr.ownStart) {
             block.appendChild(this._colorRow('起点色', tr.key + '-start'));
             this._propRow(block, sec, { label: '色相', prop: tr.h0, step: 1, indent: true });
-            this._propRow(block, sec, { label: '饱和', prop: tr.s0, step: 0.01, indent: true });
-            this._propRow(block, sec, { label: '明度', prop: tr.v0, step: 0.01, indent: true });
+            this._propRow(block, sec, { label: '饱和', prop: tr.s0, step: 1, min: 0, max: 100, indent: true });
+            this._propRow(block, sec, { label: '明度', prop: tr.v0, step: 1, min: 0, max: 100, indent: true });
         }
 
         // 终点端点：「启用」复选框 + 过渡缓动统一放在结束位置——不同过渡可共享起点，终点才是每段独有
         block.appendChild(this._colorRow('终点色', tr.key + '-end'));
-        this._propRow(block, sec, { label: '色相', prop: tr.h1, step: 1, indent: true, enable: tr.hEn, transitionEase: { easeProp: tr.easeH, easeSProp: tr.easeHS } });
-        this._propRow(block, sec, { label: '饱和', prop: tr.s1, step: 0.01, indent: true, enable: tr.sEn, transitionEase: { easeProp: tr.easeS, easeSProp: tr.easeSS } });
-        this._propRow(block, sec, { label: '明度', prop: tr.v1, step: 0.01, indent: true, enable: tr.vEn, transitionEase: { easeProp: tr.easeV, easeSProp: tr.easeVS } });
+        this._propRow(block, sec, { label: '色相', prop: tr.h1, step: 1, indent: true, enable: tr.hEn, startProp: tr.h0, transitionEase: { easeProp: tr.easeH, easeSProp: tr.easeHS } });
+        this._propRow(block, sec, { label: '饱和', prop: tr.s1, step: 1, min: 0, max: 100, indent: true, enable: tr.sEn, startProp: tr.s0, transitionEase: { easeProp: tr.easeS, easeSProp: tr.easeSS } });
+        this._propRow(block, sec, { label: '明度', prop: tr.v1, step: 1, min: 0, max: 100, indent: true, enable: tr.vEn, startProp: tr.v0, transitionEase: { easeProp: tr.easeV, easeSProp: tr.easeVS } });
 
         // 色相逆时针
         const ccw = document.createElement('label');
@@ -401,10 +407,14 @@ export class SidebarView {
         for (const p of Object.keys(this._numInputs)) {
             const inp = this._numInputs[p];
             const isKey = this._isKeyframe(sec, p, frame);
+            // 通道被禁用（取消「启用」复选框）：输入框置灰并显示起点值
+            const enRow = this._enRowsByProp[p];
+            const disabled = enRow && !sec[enRow.enable];
+            inp.disabled = !!disabled;
             if (document.activeElement !== inp) {
-                let v = all[p];
-                if (INTEGER_PROPS.includes(p) && !isKey) v = cRound(v);
-                inp.value = (Math.round(v * 100) / 100).toString();
+                const v = disabled ? all[enRow.startProp] : all[p];
+                const vv = (INTEGER_PROPS.includes(p) && !isKey) ? cRound(v) : v;
+                inp.value = (Math.round(vv * 100) / 100).toString();
             }
             inp.classList.toggle('is-key', isKey);
         }

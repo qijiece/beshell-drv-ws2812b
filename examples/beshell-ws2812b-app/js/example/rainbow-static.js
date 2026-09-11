@@ -19,15 +19,15 @@ const rainbow = new Rainbow(strip)
 // 前半段：红 → 绿 渐变（Section 只能由 addSection 创建）
 rainbow.addSection({
     x: 0, len: 8,
-    h0: 0,   s0: 1, v0: 1,
-    h1: 120, s1: 1, v1: 1,
+    h0: 0,   s0: 100, v0: 100,
+    h1: 120, s1: 100, v1: 100,
 })
 
 // 后半段：绿 → 蓝 渐变
 rainbow.addSection({
     x: 8, len: 8,
-    h0: 120, s0: 1, v0: 1,
-    h1: 240, s1: 1, v1: 1,
+    h0: 120, s0: 100, v0: 100,
+    h1: 240, s1: 100, v1: 100,
 })
 
 // 绘制一次即完成（修改分段属性后再次调用 draw() 即可刷新）

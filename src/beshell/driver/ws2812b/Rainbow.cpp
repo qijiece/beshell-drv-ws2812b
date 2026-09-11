@@ -105,7 +105,7 @@ namespace be::driver::ws2812b{
 
     Timeline * Rainbow::ensureTimeline() {
         if(!timeline) {
-            createTimeline(tlFps, tlFrames, tlRepeat) ;
+            createTimeline(tlFps, tlFrames, tlRepeat, tlRepeatCount) ;
         }
         return timeline ;
     }
@@ -117,8 +117,8 @@ namespace be::driver::ws2812b{
         return (uint32_t)(ms * tlFps / 1000.0 + 0.5) ;    // 四舍五入
     }
 
-    void Rainbow::createTimeline(double fps, uint64_t frames, bool repeat) {
-        timeline = new Timeline(ctx, JS_NULL, fps, frames, repeat) ;
+    void Rainbow::createTimeline(double fps, uint64_t frames, bool repeat, int64_t repeatCount) {
+        timeline = new Timeline(ctx, JS_NULL, fps, frames, repeat, repeatCount) ;
         timelineRef = timeline->shared() ;
         // C++ 侧事件订阅：有轨道值实际变更的帧重绘灯带（避免 QuickJS 事件分发开销）
         timeline->on(Timeline::EVENT_CHANGE, &Rainbow::onTimelineChange, this) ;
@@ -510,7 +510,7 @@ namespace be::driver::ws2812b{
      * 返回可 JSON 序列化的完整配置（供编辑器等工具使用）：
      * ```javascript
      * {
-     *   fps, frames, repeat,
+     *   fps, frames, repeat, repeatCount,
      *   strip: { pin, length, loop },
      *   sections: [ ... ],
      *   keyframes: [ { time, section, prop, value, ease, easeS }, ... ]   // time 为毫秒
@@ -531,6 +531,7 @@ namespace be::driver::ws2812b{
         JS_SetPropertyStr(ctx, obj, "fps", JS_NewFloat64(ctx, that->tlFps)) ;
         JS_SetPropertyStr(ctx, obj, "frames", JS_NewFloat64(ctx, (double)that->tlFrames)) ;
         JS_SetPropertyStr(ctx, obj, "repeat", JS_NewBool(ctx, that->tlRepeat)) ;
+        JS_SetPropertyStr(ctx, obj, "repeatCount", JS_NewInt64(ctx, that->tlRepeatCount)) ;
 
         // strip 驱动层配置
         Strip * strip = (Strip*) NativeClass::fromJS(that->stripObj) ;
@@ -669,7 +670,7 @@ namespace be::driver::ws2812b{
         JSValue jv ;
         uint32_t frame = 0 ;
         int64_t jumpTo = -1, playTo = -1 ;
-        int jumpCount = 1, playCount = 1 ;
+        int32_t jumpCount = 1, playCount = 1 ;
         uint8_t mask = 0 ;
 
         jv = JS_GetPropertyStr(ctx, jact, "frame") ;
@@ -732,6 +733,7 @@ namespace be::driver::ws2812b{
         }
         JSValue v ;
         double dtmp ;
+        int64_t itmp ;
 
         // 1. strip 驱动层配置
         v = JS_GetPropertyStr(ctx, argv[0], "strip") ;
@@ -758,6 +760,11 @@ namespace be::driver::ws2812b{
         v = JS_GetPropertyStr(ctx, argv[0], "repeat") ;
         if(!JS_IsUndefined(v)) {
             that->tlRepeat = JS_ToBool(ctx, v) ;
+        }
+        JS_FreeValue(ctx, v) ;
+        v = JS_GetPropertyStr(ctx, argv[0], "repeatCount") ;
+        if(JS_IsNumber(v) && JS_ToInt64(ctx, &itmp, v)==0) {
+            that->tlRepeatCount = itmp ;
         }
         JS_FreeValue(ctx, v) ;
         that->destroyTimeline() ;

@@ -3,7 +3,8 @@
 // 悬停 tooltip：第几帧 / 按 fps 算出的时间 / 若为关键帧则列出「哪些段落的哪些属性」。
 import { keyframesAt, endFrame, frameToMs, isKeyframeAt, NUM_PROPS, keyframesOf } from './model.js';
 
-const RULER_H = 22;
+const RULER_H = 32;
+const RULER_SPLIT = 16;   // 刻度尺上下分界：上半帧序号 / 下半秒
 const ACT_H = 16;
 const LANE_H = 24;
 const PAD_LEFT = 120;
@@ -17,6 +18,8 @@ export class TimelineView {
         this.playing = false;
         this._raf = null;
         this._lastTick = 0;
+        this._repeatRemaining = -1;   // 预览循环剩余次数（-1=无限）
+        this._hoverFrame = null;      // 悬停帧竖线（帧对齐）
 
         this.root = container;
         this._buildDOM();
@@ -33,6 +36,8 @@ export class TimelineView {
                 <button class="tbtn primary" data-act="play" title="播放/暂停">▶</button>
                 <button class="tbtn" data-act="stepFwd" title="下一帧">▶</button>
                 <button class="tbtn" data-act="end" title="跳到末帧">⏭</button>
+                <label class="tl-field" title="循环重播：播完回到首帧"><input type="checkbox" id="tl-repeat"> 循环</label>
+                <label class="tl-field" id="tl-repeat-count-wrap" title="重播次数（额外重播 N 次，总播放 = N+1；留空 = 无限循环）">次数 <input type="number" id="tl-repeat-count" min="0" step="1" placeholder="∞"></label>
                 <label class="tl-field">fps <input type="number" id="tl-fps" min="1" max="240" step="1"></label>
                 <label class="tl-field" title="动画时长（秒，支持小数）；清空/留空为自动">时长(秒) <input type="number" id="tl-length" min="0" step="0.1" placeholder="自动"></label>
                 <button class="tbtn" data-act="zoomOut" title="缩小时间轴（Ctrl＋−）">缩小</button>
@@ -45,6 +50,9 @@ export class TimelineView {
         this.fpsInput = this.root.querySelector('#tl-fps');
         this.lenInput = this.root.querySelector('#tl-length');
         this.info = this.root.querySelector('#tl-info');
+        this.repeatInput = this.root.querySelector('#tl-repeat');
+        this.repeatCountInput = this.root.querySelector('#tl-repeat-count');
+        this.repeatCountWrap = this.root.querySelector('#tl-repeat-count-wrap');
 
         this.tooltip = document.createElement('div');
         this.tooltip.className = 'tl-tooltip';
@@ -76,6 +84,17 @@ export class TimelineView {
             const frames = Math.max(0, Math.round(secs * project.fps));
             if (this.cb.onLengthChange) this.cb.onLengthChange(frames);
         });
+        this.repeatInput.addEventListener('change', () => {
+            const { project } = this.getState();
+            project.repeat = this.repeatInput.checked;
+            this.render();
+        });
+        this.repeatCountInput.addEventListener('change', () => {
+            const { project } = this.getState();
+            const raw = this.repeatCountInput.value.trim();
+            project.repeatCount = raw === '' ? -1 : Math.max(0, parseInt(raw, 10) || 0);
+            this.render();
+        });
 
         const cv = this.canvas;
         cv.addEventListener('wheel', (ev) => {
@@ -99,6 +118,7 @@ export class TimelineView {
         this._drag = null;   // null | {type:'scrub'} | {type:'kf', si, from, cur}
         cv.addEventListener('mousedown', (ev) => {
             if (ev.button !== 0) return;
+            this._hoverFrame = null;   // 拖动时隐藏悬停竖线
             const rect = cv.getBoundingClientRect();
             const hit = this._keyframeHit(ev.clientX - rect.left, ev.clientY - rect.top);
             if (hit) {
@@ -131,7 +151,11 @@ export class TimelineView {
         });
         cv.addEventListener('mouseleave', () => {
             this.tooltip.style.display = 'none';
-            if (this._hoverKF) { this._hoverKF = null; this.render(); }
+            if (this._hoverKF || this._hoverFrame != null) {
+                this._hoverKF = null;
+                this._hoverFrame = null;
+                this.render();
+            }
         });
         cv.addEventListener('contextmenu', (ev) => {
             const rect = cv.getBoundingClientRect();
@@ -193,6 +217,7 @@ export class TimelineView {
             const { project, frame } = this.getState();
             // 停在最后一帧（或之后）时，直接从第一帧开始播放
             if (frame >= endFrame(project)) this.cb.onScrub && this.cb.onScrub(0);
+            this._repeatRemaining = project.repeatCount;
             this._lastTick = performance.now();
             this._stepPlay();
         } else if (this._raf) {
@@ -211,10 +236,16 @@ export class TimelineView {
             this._lastTick = now;
             const end = endFrame(project);
             let nf = frame + 1;
-            if (nf > end) nf = project.repeat ? 0 : end;
-            if (nf === end && !project.repeat && nf === frame) { this._togglePlay(); return; }
+            if (nf > end) {
+                if (project.repeat && this._repeatRemaining !== 0) {
+                    if (this._repeatRemaining > 0) this._repeatRemaining--;
+                    nf = 0;
+                } else {
+                    this._togglePlay();   // 不循环或重播次数用完：停在末帧
+                    return;
+                }
+            }
             this.cb.onScrub && this.cb.onScrub(nf);
-            if (nf === end && !project.repeat) { this._togglePlay(); return; }
         }
         this._raf = requestAnimationFrame(this._stepPlay);
     };
@@ -251,7 +282,7 @@ export class TimelineView {
         const totalH = RULER_H + ACT_H + laneCount * LANE_H;
 
         // 刻度尺（无限，铺满整个可见宽度）
-        this._drawRuler(ctx, w);
+        this._drawRuler(ctx, w, project);
 
         // 帧动作 lane
         this._drawActionLane(ctx, project, w);
@@ -278,8 +309,18 @@ export class TimelineView {
             ctx.fillStyle = 'rgba(255,255,255,0.55)';
             ctx.font = '10px ui-monospace,Consolas,monospace';
             ctx.textAlign = 'left';
-            ctx.fillText('结束', endX + 4, RULER_H - 4);
+            ctx.fillText('结束', endX + 4, RULER_SPLIT - 6);
             ctx.textAlign = 'start';
+        }
+
+        // 悬停帧竖线（帧对齐，随鼠标移动；播放头覆盖在其上）
+        if (this._hoverFrame != null) {
+            const hx = this._frameToX(this._hoverFrame);
+            if (hx >= PAD_LEFT && hx <= w) {
+                ctx.strokeStyle = 'rgba(255,255,255,0.32)';
+                ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(hx, 0); ctx.lineTo(hx, Math.max(totalH, RULER_H)); ctx.stroke();
+            }
         }
 
         // 播放头
@@ -296,6 +337,10 @@ export class TimelineView {
         // 信息栏
         this.info.textContent = `帧 ${frame} / ${end} · ${frameToMs(project, frame).toFixed(1)} ms`;
         this.fpsInput.value = project.fps;
+        this.repeatInput.checked = !!project.repeat;
+        this.repeatCountInput.value = project.repeatCount < 0 ? '' : project.repeatCount;
+        this.repeatCountInput.disabled = !project.repeat;
+        this.repeatCountWrap.classList.toggle('disabled', !project.repeat);
         // 时长以秒显示（支持小数）；自动（frames=0）也显示 endFrame 算出的具体时间
         const effFrames = project.frames > 0 ? project.frames : end;
         this.lenInput.classList.toggle('auto', project.frames === 0);
@@ -304,26 +349,48 @@ export class TimelineView {
         }
     }
 
-    _drawRuler(ctx, w) {
+    _drawRuler(ctx, w, project) {
+        const fps = project.fps || 60;
         ctx.fillStyle = '#151920';
         ctx.fillRect(0, 0, w, RULER_H);
-        ctx.fillStyle = '#8b93a1';
         ctx.font = '10px ui-monospace,Consolas,monospace';
-        ctx.textAlign = 'center';      // 帧号居中于刻度竖线上方
-        // 刻度步长随缩放自适应
-        const step = Math.max(1, Math.ceil(60 / this.pxPerFrame / 5));
+        ctx.textAlign = 'center';
+
+        const splitY = RULER_SPLIT;   // 上半：帧序号，下半：秒
+
         // 可见帧范围（无限轴，铺满整个宽度）
         const f0 = Math.max(0, Math.floor(this._xToFrame(PAD_LEFT)));
         const f1 = Math.ceil(this._xToFrame(w));
+
+        // 上半：帧序号（步长随缩放自适应）
+        const step = Math.max(1, Math.ceil(60 / this.pxPerFrame / 5));
+        ctx.fillStyle = '#8b93a1';
         for (let f = Math.floor(f0 / step) * step; f <= f1; f += step) {
             const x = this._frameToX(f);
             if (x < PAD_LEFT - 10 || x > w) continue;
             ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-            ctx.beginPath(); ctx.moveTo(x, RULER_H - 8); ctx.lineTo(x, RULER_H); ctx.stroke();
-            ctx.fillText(f, x, RULER_H - 13);
+            ctx.beginPath(); ctx.moveTo(x, splitY - 4); ctx.lineTo(x, splitY); ctx.stroke();
+            ctx.fillText(f, x, splitY - 6);
         }
+
+        // 下半：秒（0.5s 起，间距不足时按 1/2/5/10/30/60 放大）
+        const secSteps = [0.5, 1, 2, 5, 10, 30, 60];
+        let secStep = 60;
+        for (const s of secSteps) {
+            if (s * fps * this.pxPerFrame >= 28) { secStep = s; break; }
+        }
+        ctx.fillStyle = '#7c8695';
+        for (let sec = Math.floor(f0 / fps / secStep) * secStep; sec * fps <= f1 + fps; sec += secStep) {
+            const x = this._frameToX(sec * fps);
+            if (x < PAD_LEFT - 6 || x > w) continue;
+            ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+            ctx.beginPath(); ctx.moveTo(x, splitY); ctx.lineTo(x, splitY + 4); ctx.stroke();
+            ctx.fillText(Number.isInteger(sec) ? String(sec) : sec.toFixed(1), x, RULER_H - 4);
+        }
+
         ctx.textAlign = 'start';       // 恢复，避免影响 lane 名/动作文本
         ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.beginPath(); ctx.moveTo(0, splitY - 0.5); ctx.lineTo(w, splitY - 0.5); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(0, RULER_H - 0.5); ctx.lineTo(w, RULER_H - 0.5); ctx.stroke();
     }
 
@@ -388,11 +455,11 @@ export class TimelineView {
         if (state === 'selected') {
             ctx.fillStyle = '#ffffff';
             ctx.fill();
-            ctx.strokeStyle = '#ffd166';
+            ctx.strokeStyle = '#b388ff';
             ctx.lineWidth = 2;
             ctx.stroke();
         } else {
-            ctx.fillStyle = '#ffd166';
+            ctx.fillStyle = '#b388ff';
             ctx.fill();
             if (state === 'hover') {
                 ctx.strokeStyle = 'rgba(255,255,255,0.9)';
@@ -406,23 +473,29 @@ export class TimelineView {
         const rect = this.canvas.getBoundingClientRect();
         const rootRect = this.root.getBoundingClientRect();
         const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
-        // mousemove 绑定在 window 上，只在时间轴画布范围内显示 tooltip
+        // mousemove 绑定在 window 上，只在时间轴画布范围内显示 tooltip / 悬停竖线
         if (mx < 0 || my < 0 || mx > rect.width || my > rect.height) {
             this.tooltip.style.display = 'none';
-            if (this._hoverKF) { this._hoverKF = null; this.render(); }
+            if (this._hoverKF || this._hoverFrame != null) {
+                this._hoverKF = null;
+                this._hoverFrame = null;
+                this.render();
+            }
             return;
         }
 
         const hit = this._keyframeHit(mx, my);
-        // 更新悬停的关键帧（菱形高亮），变化时重绘
+        const f = Math.round(this._xToFrame(mx));
+        const hf = f >= 0 ? f : null;   // 悬停帧（帧对齐；左侧留白区不显示竖线）
+        // 更新悬停的关键帧（菱形高亮）与悬停帧竖线，变化时重绘
         const hoverChanged =
             (!!hit !== !!this._hoverKF) ||
-            (hit && this._hoverKF && (hit.si !== this._hoverKF.si || hit.frame !== this._hoverKF.frame));
-        if (hoverChanged) { this._hoverKF = hit; this.render(); }
-        this.canvas.style.cursor = hit ? 'grab' : 'crosshair';
+            (hit && this._hoverKF && (hit.si !== this._hoverKF.si || hit.frame !== this._hoverKF.frame)) ||
+            (hf !== this._hoverFrame);
+        if (hoverChanged) { this._hoverKF = hit; this._hoverFrame = hf; this.render(); }
+        this.canvas.style.cursor = hit ? 'grab' : 'default';
 
         const { project } = this.getState();
-        const f = Math.round(this._xToFrame(mx));
         if (f < 0) { this.tooltip.style.display = 'none'; return; }
 
         const kfs = keyframesAt(project, f);

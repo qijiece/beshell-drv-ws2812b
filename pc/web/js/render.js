@@ -85,9 +85,10 @@ export class PreviewRenderer {
 
         for (let i = 0; i < n; i++) {
             const r = this.ledScreenRect(i);
-            const [rr, gg, bb] = px[i];
-            const lit = (rr + gg + bb) >= 24;
-            // 熄灭灯珠用比背景更亮的「插座色」，与深色背景拉开对比
+            const col = px[i];
+            // null = 未被分段/阴影覆盖 → 插座色；否则按实际颜色绘制（含 v=0 的纯黑）
+            const lit = col !== null;
+            const [rr, gg, bb] = col || [0, 0, 0];
             ctx.fillStyle = lit ? `rgb(${rr},${gg},${bb})` : '#37434f';
             ctx.strokeStyle = lit ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.3)';
             ctx.lineWidth = 1;
@@ -334,7 +335,7 @@ export class PreviewRenderer {
             (this._drag && this._drag.kind === (which === 'start' ? 'resizeStart' : 'resizeEnd'));
         const hw = 3, hh = 30;
         const handle = (x, hot) => {
-            ctx.fillStyle = hot ? '#ffd166' : '#4d9fff';
+            ctx.fillStyle = hot ? '#b388ff' : '#c9b0ff';
             ctx.fillRect(x - hw, this.ty - hh, hw * 2, hh * 2);
             ctx.strokeStyle = 'rgba(0,0,0,0.5)';
             ctx.lineWidth = 1;
@@ -356,14 +357,14 @@ export class PreviewRenderer {
             ctx.lineTo(x, this.ty);
             ctx.stroke();
             ctx.setLineDash([]);
-            ctx.fillStyle = hot ? '#ffd166' : color;
+            ctx.fillStyle = hot ? '#b388ff' : color;
             ctx.fillRect(x - sW, y - sH, sW * 2, sH * 2);
             ctx.strokeStyle = 'rgba(0,0,0,0.5)';
             ctx.lineWidth = 1;
             ctx.strokeRect(x - sW, y - sH, sW * 2, sH * 2);
         };
-        shadowHandle(m.frontScreen, this.ty + sDy, shadowHot('front'), '#4d9fff');
-        shadowHandle(m.backScreen, this.ty + sDy, shadowHot('back'), '#4d9fff');
+        shadowHandle(m.frontScreen, this.ty + sDy, shadowHot('front'), '#c9b0ff');
+        shadowHandle(m.backScreen, this.ty + sDy, shadowHot('back'), '#c9b0ff');
     }
 
     // ---------- 灯带拉伸（右端 handle 改变 strip.length） ----------
@@ -386,7 +387,7 @@ export class PreviewRenderer {
         const x = this._stripRightScreen();
         const hw = 3, hh = 34;
         const hot = this._hoverStripHandle || this._stripDrag;
-        ctx.fillStyle = hot ? '#ffd166' : 'rgba(77,159,255,0.55)';
+        ctx.fillStyle = hot ? '#b388ff' : 'rgba(179,136,255,0.55)';
         ctx.fillRect(x - hw, this.ty - hh, hw * 2, hh * 2);
         ctx.strokeStyle = 'rgba(0,0,0,0.5)';
         ctx.lineWidth = 1;
@@ -401,6 +402,7 @@ export class PreviewRenderer {
         const delta = (mx - d.startX) / d.scale / d.pitch;
         const n = Math.max(1, Math.min(1024, Math.round(d.startLength + delta)));
         if (this.cb.onStripLengthChange) this.cb.onStripLengthChange(n);
+        this._showTextTip(`灯带长度: ${n}`, ev.clientX, ev.clientY);
     }
 
     _sectionMouseDown(ev) {
@@ -478,23 +480,35 @@ export class PreviewRenderer {
         const d = this._drag;
         const delta = (mx - d.startX) / d.scale / d.pitch;   // LED 单位（浮点）
         const dI = Math.round(delta);                        // 对齐到整数 LED 步进
+        let tip = '';
         if (d.kind === 'move') {
-            this._emit(d.index, 'x', d.startXi + dI);
+            const x = d.startXi + dI;
+            this._emit(d.index, 'x', x);
+            tip = `位置: ${x}`;
         } else if (d.kind === 'resizeEnd') {
-            this._emit(d.index, 'len', Math.max(1, d.startNi + dI));
+            const len = Math.max(1, d.startNi + dI);
+            this._emit(d.index, 'len', len);
+            tip = `长度: ${len}`;
         } else if (d.kind === 'resizeFront') {
             // 前阴影向左延伸：向左拖（dI<0）增大长度
-            this._emit(d.index, 'shadowFront', Math.max(0, d.startFront - dI));
+            const sf = Math.max(0, d.startFront - dI);
+            this._emit(d.index, 'shadowFront', sf);
+            tip = `前阴影长度: ${sf}`;
         } else if (d.kind === 'resizeBack') {
             // 后阴影向右延伸：向右拖（dI>0）增大长度
-            this._emit(d.index, 'shadowBack', Math.max(0, d.startBack + dI));
+            const sb = Math.max(0, d.startBack + dI);
+            this._emit(d.index, 'shadowBack', sb);
+            tip = `后阴影长度: ${sb}`;
         } else { // resizeStart：右端固定，起点移动
             const right = d.startXi + d.startNi;             // 右端（LED 计数）不变
             let newXi = d.startXi + dI;
             if (newXi > right - 1) newXi = right - 1;        // 至少保留 1 颗
+            const len = Math.max(1, right - newXi);
             this._emit(d.index, 'x', newXi);
-            this._emit(d.index, 'len', Math.max(1, right - newXi));
+            this._emit(d.index, 'len', len);
+            tip = `起点: ${newXi} · 长度: ${len}`;
         }
+        this._showTextTip(tip, ev.clientX, ev.clientY);
     }
 
     _emit(index, prop, value) {
@@ -608,10 +622,12 @@ export class PreviewRenderer {
             if (this.dragging) { this.dragging = false; this.canvas.style.cursor = 'default'; }
             if (this._stripDrag) {
                 this._stripDrag = null;
+                this.tooltip.style.display = 'none';
                 if (this._hoverStripHandle) { this._hoverStripHandle = false; this.render(); }
             }
             if (this._drag) {
                 this._drag = null;
+                this.tooltip.style.display = 'none';
                 if (this._hoverHandle) { this._hoverHandle = null; this.render(); }
                 if (this._hoverShadow) { this._hoverShadow = null; this.render(); }
             }
@@ -633,14 +649,20 @@ export class PreviewRenderer {
     }
 
     _showTooltip(idx, rgb, cx, cy) {
-        const [r, g, b] = rgb;
-        const [h, s, v] = rgb2hsv(r, g, b);
-        const hex = rgbToHex(r, g, b);
-        this.tooltip.innerHTML = `
-            <div class="tt-title">LED #${idx}</div>
-            <div class="tt-row"><span class="tt-swatch" style="background:${hex}"></span>${hex.toUpperCase()}</div>
-            <div class="tt-row">RGB ${fmtRGB(r, g, b)}</div>
-            <div class="tt-row">HSV ${fmtHSV(h, s, v)}</div>`;
+        let inner;
+        if (rgb) {
+            const [r, g, b] = rgb;
+            const [h, s, v] = rgb2hsv(r, g, b);
+            const hex = rgbToHex(r, g, b);
+            inner = `
+                <div class="tt-title">LED #${idx}</div>
+                <div class="tt-row"><span class="tt-swatch" style="background:${hex}"></span>${hex.toUpperCase()}</div>
+                <div class="tt-row">RGB ${fmtRGB(r, g, b)}</div>
+                <div class="tt-row">HSV ${fmtHSV(h, s, v)}</div>`;
+        } else {
+            inner = `<div class="tt-title">LED #${idx}</div><div class="tt-row">未点亮</div>`;
+        }
+        this.tooltip.innerHTML = inner;
         this.tooltip.style.display = 'block';
         const rect = this.canvas.getBoundingClientRect();
         let left = cx - rect.left + 14, top = cy - rect.top + 14;

@@ -78,7 +78,7 @@ namespace be::driver::ws2812b{
      * 示例：
      * ```javascript
      * import { hsv2rgb } from "ws2812b"
-     * console.log(hsv2rgb(120, 1, 1))   // [0, 255, 0]
+     * console.log(hsv2rgb(120, 100, 100))   // [0, 255, 0]
      * ```
      *
      * @component beshell-drv-ws2812b
@@ -86,8 +86,8 @@ namespace be::driver::ws2812b{
      * @module ws2812b
      * @function hsv2rgb
      * @param h:number 色相（0-360，自动回卷）
-     * @param s:number 饱和度（0-1）
-     * @param v:number 明度（0-1）
+     * @param s:number 饱和度（0-100）
+     * @param v:number 明度（0-100）
      * @return Array\<number\> [r, g, b]，各通道范围 0-255
      */
     JSValue WS2812B::hsv2rgb(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {

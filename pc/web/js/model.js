@@ -26,6 +26,12 @@ export const EASE_S_PROPS = [
 ];
 // 色相方向布尔属性（Section.cpp boolProps）
 export const CCW_PROPS = ["h_ccw", "frontCcw", "backCcw"];
+// 通道「启用」开关（仅前端预览控制渐变；序列化以保留用户开关状态，引擎/WASM 忽略该字段）
+export const ENABLED_PROPS = [
+    "hEnabled", "sEnabled", "vEnabled",
+    "frontHEnabled", "frontSEnabled", "frontVEnabled",
+    "backHEnabled", "backSEnabled", "backVEnabled",
+];
 
 // 三种渲染过渡，供 UI / 渲染统一遍历。
 // 主体：起点 → 终点；前阴影：起点向前（索引减小）；后阴影：起点向后（索引增大）。
@@ -58,6 +64,27 @@ export const TRANSITIONS = [
     },
 ];
 
+// 「启用」开关折叠映射：end → { start, en }。未启用时端点跟随起点，
+// 使不含「启用」概念的引擎（C++/WASM/硬件）渲染结果与预览一致。
+export const FOLD = (() => {
+    const m = {};
+    for (const tr of TRANSITIONS) {
+        m[tr.h1] = { start: tr.h0, en: tr.hEn };
+        m[tr.s1] = { start: tr.s0, en: tr.sEn };
+        m[tr.v1] = { start: tr.v0, en: tr.vEn };
+    }
+    return m;
+})();
+
+// 未启用通道端点的最终跟随起点（级联解析，如 backH1 → h1 → h0）。
+function foldSource(s, end) {
+    const f = FOLD[end];
+    if (!f || s[f.en]) return end;
+    let src = f.start;
+    while (FOLD[src] && !s[FOLD[src].en]) src = FOLD[src].start;
+    return src;
+}
+
 // 可点击编辑的颜色端点（预览区首/末灯珠 → 快捷面板）。
 // 4 色模型：起点=主体 h0，终点=主体 h1；前/后阴影终点各自独立。
 // 键值与 render.js 命中结果对齐：body-start / body-end / front-end / back-end。
@@ -81,23 +108,23 @@ export function defaultSection() {
         x: 0, len: 1,
         shadowFront: 0, shadowBack: 0,
         // 主体过渡：起点 → 终点（默认顺时针绕色相环一圈）
-        h0: 0, s0: 1, v0: 1, h1: 360, s1: 1, v1: 1,
+        h0: 0, s0: 100, v0: 100, h1: 360, s1: 100, v1: 100,
         easeH: "linear", easeS: "linear", easeV: "linear",
         easeHS: 1.70158, easeSS: 1.70158, easeVS: 1.70158,
         h_ccw: false,
-        hEnabled: true, sEnabled: true, vEnabled: true,   // 各通道「启用」（仅前端预览，不持久化）
+        hEnabled: true, sEnabled: true, vEnabled: true,   // 各通道「启用」（仅前端预览生效，状态随配置持久化）
         // 前阴影过渡：起点向前（起点 = 主体起点，默认明度淡出到 0）
-        frontH1: 0, frontS1: 1, frontV1: 0,
+        frontH1: 0, frontS1: 100, frontV1: 0,
         frontEaseH: "linear", frontEaseS: "linear", frontEaseV: "linear",
         frontEaseHS: 1.70158, frontEaseSS: 1.70158, frontEaseVS: 1.70158,
         frontCcw: false,
-        frontHEnabled: true, frontSEnabled: true, frontVEnabled: true,
+        frontHEnabled: false, frontSEnabled: true, frontVEnabled: true,
         // 后阴影过渡：起点向后（起点 = 主体终点，默认明度淡出到 0）
-        backH1: 0, backS1: 1, backV1: 0,
+        backH1: 0, backS1: 100, backV1: 0,
         backEaseH: "linear", backEaseS: "linear", backEaseV: "linear",
         backEaseHS: 1.70158, backEaseSS: 1.70158, backEaseVS: 1.70158,
         backCcw: false,
-        backHEnabled: true, backSEnabled: true, backVEnabled: true,
+        backHEnabled: false, backSEnabled: true, backVEnabled: true,
         keyframes: {},   // prop -> [{frame, value, ease, easeS}]，按 frame 升序，frame 恒 > 0
     };
 }
@@ -107,6 +134,7 @@ export function defaultProject() {
         fps: 60,
         frames: 0,       // 0 = 自动（以最后关键帧/帧动作为结束）
         repeat: false,
+        repeatCount: -1,   // 额外重播次数（-1=无限；0=只播一次；N=额外重播 N 次）
         strip: { pin: 5, length: 16, loop: false },
         sections: [],
         frameActions: [], // {frame, jumpTo, jumpCount, playTo, playCount}
@@ -300,7 +328,7 @@ export function removeFrameAction(project, frame) {
 export function computeFrame(project, frame) {
     const len = Math.max(0, project.strip.length | 0);
     const px = new Array(len);
-    for (let i = 0; i < len; i++) px[i] = [0, 0, 0];
+    for (let i = 0; i < len; i++) px[i] = null;   // null = 未被任何分段/阴影覆盖（未点亮）
 
     const loop = !!project.strip.loop;
     const setPx = (idx, r, g, b) => {
@@ -369,10 +397,12 @@ export function toEngineConfig(project) {
     const keyframes = [];
     project.sections.forEach((s, si) => {
         for (const p of NUM_PROPS) {
-            const kfs = keyframesOf(s, p).filter(k => k.frame > 0);
+            // 未启用的通道端点跟随起点（镜像起点的关键帧，使端点随时间与起点一致）
+            const src = foldSource(s, p);
+            const kfs = keyframesOf(s, src).filter(k => k.frame > 0);
             if (kfs.length === 0) continue;
             // 帧 0 原点（镜像 C++ Track::ensureOrigin：动画属性都会有一条 0 帧基准关键帧）
-            keyframes.push({ time: 0, section: si, prop: p, value: s[p], ease: "linear", easeS: 1.70158 });
+            keyframes.push({ time: 0, section: si, prop: p, value: s[src], ease: "linear", easeS: 1.70158 });
             for (const k of kfs) {
                 keyframes.push({
                     time: k.frame * 1000 / project.fps,
@@ -385,6 +415,7 @@ export function toEngineConfig(project) {
         fps: project.fps,
         frames: project.frames,
         repeat: project.repeat,
+        repeatCount: project.repeatCount,
         strip: { ...project.strip },
         sections: project.sections.map(s => {
             const c = {};
@@ -396,6 +427,12 @@ export function toEngineConfig(project) {
             for (const p of EASE_PROPS) c[p] = s[p];
             for (const p of EASE_S_PROPS) c[p] = s[p];
             for (const p of CCW_PROPS) c[p] = !!s[p];
+            for (const p of ENABLED_PROPS) c[p] = !!s[p];
+            // 折叠未启用的通道：端点 = 起点（引擎无「启用」概念，导出时等价化，硬件与预览一致）
+            for (const end of Object.keys(FOLD)) {
+                const src = foldSource(s, end);
+                if (src !== end) c[end] = c[src];
+            }
             return c;
         }),
         keyframes,
@@ -409,6 +446,7 @@ export function fromEngineConfig(config) {
     project.fps = fps;
     project.frames = config.frames > 0 ? config.frames : 0;
     project.repeat = !!config.repeat;
+    project.repeatCount = config.repeatCount != null ? config.repeatCount : -1;
     if (config.strip) Object.assign(project.strip, config.strip);
 
     project.sections = (config.sections || []).map((sc, i) => {
@@ -417,6 +455,7 @@ export function fromEngineConfig(config) {
         for (const p of EASE_PROPS) if (typeof sc[p] === 'string') s[p] = sc[p];
         for (const p of EASE_S_PROPS) if (typeof sc[p] === 'number') s[p] = sc[p];
         for (const p of CCW_PROPS) if (typeof sc[p] === 'boolean') s[p] = sc[p];
+        for (const p of ENABLED_PROPS) if (typeof sc[p] === 'boolean') s[p] = sc[p];
         s.name = `Section ${i + 1}`;
         return s;
     });

@@ -4,8 +4,9 @@
 export function hsv2rgb(h, s, v) {
     h = h % 360.0;
     if (h < 0) h += 360.0;
-    if (s < 0) s = 0; else if (s > 1) s = 1;
-    if (v < 0) v = 0; else if (v > 1) v = 1;
+    if (s < 0) s = 0; else if (s > 100) s = 100;
+    if (v < 0) v = 0; else if (v > 100) v = 100;
+    s /= 100; v /= 100;
 
     const c = v * s;
     const x = c * (1 - Math.abs((h / 60.0) % 2.0 - 1));
@@ -39,7 +40,7 @@ export function rgb2hsv(r, g, b) {
         h *= 60;
         if (h < 0) h += 360;
     }
-    return [h, s, v];
+    return [h, s * 100, v * 100];
 }
 
 export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -65,5 +66,5 @@ export function fmtRGB(r, g, b) {
     return `${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}`;
 }
 export function fmtHSV(h, s, v) {
-    return `${h.toFixed(1)}°, ${(s * 100).toFixed(0)}%, ${(v * 100).toFixed(0)}%`;
+    return `${h.toFixed(1)}°, ${s.toFixed(0)}%, ${v.toFixed(0)}%`;
 }

@@ -4,7 +4,7 @@ import { Strip, Rainbow, hsv2rgb } from "ws2812b"
 console.log("[ws2812b] main.js running")
 
 // hsv2rgb 纯函数
-const c = hsv2rgb(120, 1, 1)
+const c = hsv2rgb(120, 100, 100)
 if (c[0] === 0 && c[1] === 255 && c[2] === 0) {
     console.log("[ws2812b] hsv2rgb ok:", JSON.stringify(c))
 } else {
@@ -15,7 +15,7 @@ if (c[0] === 0 && c[1] === 255 && c[2] === 0) {
 const strip = new Strip()
 strip.setup({ pin: 5, length: 16, loop: true })
 strip.setPixel(0, 255, 0, 0)
-strip.setPixelHSV(1, 120, 1, 1)
+strip.setPixelHSV(1, 120, 100, 100)
 strip.flush()
 console.log("[ws2812b] strip loop =", strip.loop)
 

@@ -21,8 +21,8 @@ const rainbow = new Rainbow(strip, { fps: 30, repeat: true })
 const sec = rainbow.addSection({
     x: 0,
     len: 8,
-    h0: 0, s0: 1, v0: 1,      // 起点：红
-    h1: 360, s1: 1, v1: 1,    // 终点：绕色相环一圈
+    h0: 0, s0: 100, v0: 100,      // 起点：红
+    h1: 360, s1: 100, v1: 100,    // 终点：绕色相环一圈
     shadowFront: 2, shadowFrontEase: "outQuad",
     shadowBack: 2,  shadowBackEase: "outQuad",
 })

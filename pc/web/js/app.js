@@ -9,6 +9,11 @@ import { SidebarView } from './sidebar.js';
 import { QuickPanel } from './quickpanel.js';
 import { generateCode } from './codegen.js';
 import { loadWasm } from './wasm.js';
+import { listProjects, saveProject, loadProject, deleteProject, updateProjectConfig } from './storage.js';
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 const PRESETS = [
     { name: 'WS2812B-5050 (5.0×5.0mm)', w: 14, h: 14 },
@@ -28,6 +33,7 @@ const state = {
 };
 
 let preview, timeline, sidebar, quickPanel, wasm = null;
+let currentProjectId = null;   // 当前工程对应的已保存项目 id（null = 尚未保存到本地项目）
 
 function setFrame(f) {
     // 允许超出当前结束帧（在范围外放置关键帧会自动扩展动画时长）
@@ -64,7 +70,9 @@ function buildLayoutPanel() {
             <select id="lp-preset">
                 ${PRESETS.map((p, i) => `<option value="${i}">${p.name}</option>`).join('')}
             </select>
-        </label>`;
+        </label>
+        <label class="lp-field">引脚 <input id="lp-pin" type="number" min="0" max="64" step="1"></label>
+        <label class="lp-field"><input id="lp-loop" type="checkbox"> 回环 loop</label>`;
 
     const rows = host.querySelector('#lp-rows');
     const cols = host.querySelector('#lp-cols');
@@ -109,6 +117,20 @@ function buildLayoutPanel() {
         ledh.value = p.h;
         applyLayout(true);
     });
+
+    const pin = host.querySelector('#lp-pin');
+    const loop = host.querySelector('#lp-loop');
+    pin.value = state.project.strip.pin;
+    loop.checked = !!state.project.strip.loop;
+    pin.addEventListener('change', () => {
+        const v = parseInt(pin.value, 10);
+        state.project.strip.pin = Number.isNaN(v) ? 5 : Math.max(0, Math.min(64, v));
+        pin.value = state.project.strip.pin;
+    });
+    loop.addEventListener('change', () => {
+        state.project.strip.loop = loop.checked;
+        refresh();   // loop 影响预览（索引回绕）
+    });
 }
 
 function syncLayoutPanel() {
@@ -117,9 +139,13 @@ function syncLayoutPanel() {
     const spacing = document.querySelector('#lp-spacing');
     const ledw = document.querySelector('#lp-ledw');
     const ledh = document.querySelector('#lp-ledh');
+    const pin = document.querySelector('#lp-pin');
+    const loop = document.querySelector('#lp-loop');
     if (spacing) spacing.value = state.layout.spacing;
     if (ledw) ledw.value = state.layout.ledW;
     if (ledh) ledh.value = state.layout.ledH;
+    if (pin) pin.value = state.project.strip.pin;
+    if (loop) loop.checked = !!state.project.strip.loop;
 }
 
 // ---------- 分段操作 ----------
@@ -169,15 +195,169 @@ function exportJson() {
     URL.revokeObjectURL(a.href);
 }
 
-function importJson(text) {
-    let cfg;
-    try { cfg = JSON.parse(text); } catch (e) { alert('JSON 解析失败: ' + e.message); return; }
+// 用引擎配置替换当前工程（导入 JSON 与项目管理载入共用）
+function applyProject(cfg, id = null, layout = null) {
     state.project = fromEngineConfig(cfg);
     state.frame = 0;
     state.selection = state.project.sections.length > 0 ? 0 : -1;
+    currentProjectId = id;
+    if (layout) Object.assign(state.layout, layout);
     syncLayoutPanel();
     refreshAll();
     if (preview) preview.fit();
+}
+
+function importJson(text) {
+    let cfg;
+    try { cfg = JSON.parse(text); } catch (e) { alert('JSON 解析失败: ' + e.message); return; }
+    applyProject(cfg);
+}
+
+// ---------- 项目管理（localStorage） ----------
+
+function openProjectManager() {
+    const old = document.querySelector('.modal-overlay');
+    if (old) old.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+        <div class="modal proj-modal">
+            <div class="modal-head">
+                <span class="modal-title">打开项目</span>
+                <button class="modal-close" type="button" title="关闭">×</button>
+            </div>
+            <div class="proj-list" id="proj-list"></div>
+        </div>`;
+    document.body.appendChild(overlay);
+
+    const listEl = overlay.querySelector('#proj-list');
+
+    const renderList = () => {
+        const items = listProjects().sort((a, b) => b.updatedAt - a.updatedAt);
+        if (!items.length) {
+            listEl.innerHTML = '<div class="proj-empty">暂无已保存的项目</div>';
+            return;
+        }
+        listEl.innerHTML = '';
+        for (const p of items) {
+            const row = document.createElement('div');
+            row.className = 'proj-item';
+            row.innerHTML = `
+                <div class="proj-info">
+                    <div class="proj-name">${escapeHtml(p.name)} <span class="proj-time">${new Date(p.updatedAt).toLocaleString()}</span></div>
+                    <div class="proj-desc">${escapeHtml(p.description || '')}</div>
+                </div>
+                <div class="proj-actions">
+                    <button data-act="load" type="button">载入</button>
+                    <button data-act="del" type="button">删除</button>
+                </div>`;
+            row.querySelector('[data-act="load"]').addEventListener('click', () => {
+                const rec = loadProject(p.id);
+                if (!rec) return;
+                applyProject(rec.config, p.id, rec.layout);
+                close();
+            });
+            row.querySelector('[data-act="del"]').addEventListener('click', () => {
+                if (!confirm(`删除项目「${p.name}」？`)) return;
+                deleteProject(p.id);
+                if (currentProjectId === p.id) currentProjectId = null;
+                renderList();
+            });
+            listEl.appendChild(row);
+        }
+    };
+
+    const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+    const close = () => { window.removeEventListener('keydown', onKey); overlay.remove(); };
+    overlay.querySelector('.modal-close').addEventListener('click', close);
+    overlay.addEventListener('mousedown', (ev) => { if (ev.target === overlay) close(); });
+    window.addEventListener('keydown', onKey);
+
+    renderList();
+}
+
+// 项目设置：编辑当前项目的名称与说明（并保存当前工程）
+function openProjectSettings() {
+    const old = document.querySelector('.modal-overlay');
+    if (old) old.remove();
+
+    let curName = '', curDesc = '';
+    if (currentProjectId) {
+        const rec = listProjects().find(r => r.id === currentProjectId);
+        if (rec) { curName = rec.name; curDesc = rec.description || ''; }
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+        <div class="modal">
+            <div class="modal-head">
+                <span class="modal-title">项目设置</span>
+                <button class="modal-close" type="button" title="关闭">×</button>
+            </div>
+            <div class="proj-save">
+                <label class="ms-field">名称 <input id="proj-name" type="text" placeholder="项目名称"></label>
+                <label class="ms-field proj-desc-field">说明 <textarea id="proj-desc" rows="3" placeholder="可选说明"></textarea></label>
+                <span class="proj-hint" id="proj-hint"></span>
+            </div>
+            <div class="modal-actions">
+                <button id="proj-save" class="primary" type="button">保存</button>
+                <button id="proj-close" type="button">关闭</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+
+    const nameEl = overlay.querySelector('#proj-name');
+    const descEl = overlay.querySelector('#proj-desc');
+    const hintEl = overlay.querySelector('#proj-hint');
+    nameEl.value = curName;
+    descEl.value = curDesc;
+
+    overlay.querySelector('#proj-save').addEventListener('click', () => {
+        const name = nameEl.value.trim();
+        if (!name) { hintEl.textContent = '请填写项目名称'; return; }
+        const id = saveProject(toEngineConfig(state.project), { ...state.layout }, {
+            id: currentProjectId,
+            name,
+            description: descEl.value.trim(),
+        });
+        currentProjectId = id;
+        hintEl.textContent = '已保存 ✓';
+        setTimeout(() => { hintEl.textContent = ''; }, 1500);
+    });
+
+    const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+    const close = () => { window.removeEventListener('keydown', onKey); overlay.remove(); };
+    overlay.querySelector('.modal-close').addEventListener('click', close);
+    overlay.querySelector('#proj-close').addEventListener('click', close);
+    overlay.addEventListener('mousedown', (ev) => { if (ev.target === overlay) close(); });
+    window.addEventListener('keydown', onKey);
+}
+
+// 新建项目：重置为空工程
+function newProject() {
+    state.project = defaultProject();
+    state.layout = { rows: 1, spacing: 4, ledW: 14, ledH: 14 };
+    state.frame = 0;
+    state.selection = -1;
+    currentProjectId = null;
+    syncLayoutPanel();
+    refreshAll();
+    if (preview) preview.fit();
+}
+
+// 一键保存：当前有已保存项目时直接覆盖；否则打开项目管理弹窗命名
+function quickSave() {
+    const cfg = toEngineConfig(state.project);
+    const btn = document.querySelector('#btn-quick-save');
+    if (currentProjectId && updateProjectConfig(currentProjectId, cfg, { ...state.layout })) {
+        const html = btn.innerHTML;
+        btn.innerHTML = '<span style="color:#3ecf8e;font-weight:700">✓</span>';
+        setTimeout(() => { btn.innerHTML = html; }, 1200);
+    } else {
+        openProjectManager();
+    }
 }
 
 // ---------- 导出 beshell 代码（弹窗 + setup 参数） ----------
@@ -204,7 +384,7 @@ function openCodeExport() {
     overlay.innerHTML = `
         <div class="modal">
             <div class="modal-head">
-                <span class="modal-title">导出 beshell 代码</span>
+                <span class="modal-title">生成 beshell 代码</span>
                 <button class="modal-close" type="button" title="关闭">×</button>
             </div>
             <div class="modal-setup">
@@ -359,6 +539,10 @@ async function main() {
     preview.fit();
 
     // 工具条按钮
+    document.querySelector('#btn-new').addEventListener('click', newProject);
+    document.querySelector('#btn-quick-save').addEventListener('click', quickSave);
+    document.querySelector('#btn-projects').addEventListener('click', openProjectManager);
+    document.querySelector('#btn-settings').addEventListener('click', openProjectSettings);
     document.querySelector('#btn-export').addEventListener('click', exportJson);
     document.querySelector('#btn-import').addEventListener('click', () => {
         document.querySelector('#file-import').click();
@@ -373,6 +557,15 @@ async function main() {
     });
     document.querySelector('#btn-verify').addEventListener('click', verifyEngine);
     document.querySelector('#btn-export-code').addEventListener('click', openCodeExport);
+
+    // Ctrl/Cmd+S 保存（等价于「保存」按钮；阻止浏览器默认「保存网页」）
+    window.addEventListener('keydown', (ev) => {
+        if (!(ev.ctrlKey || ev.metaKey)) return;
+        if (ev.key === 's' || ev.key === 'S') {
+            ev.preventDefault();
+            quickSave();
+        }
+    });
 
     // WASM 载入（非阻塞；失败不影响编辑器）
     setWasmStatus('WASM 载入中…', false);

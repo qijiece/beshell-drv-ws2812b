@@ -13,8 +13,8 @@ namespace be::driver::ws2812b{
     // 「过渡」为静态、与时间轴无关、在单帧渲染内发生的颜色渐变；
     // 随时间轴变化的动画插补另称「间补」（由 Timeline 驱动，见 Rainbow）。
     struct Transition {
-        double h0 = 0, s0 = 1, v0 = 1 ;    // 起点 HSV（h:0-360，s/v:0-1）
-        double h1 = 0, s1 = 1, v1 = 1 ;    // 终点 HSV（阴影默认 v1=0 完全淡出）
+        double h0 = 0, s0 = 100, v0 = 100 ;    // 起点 HSV（h:0-360，s/v:0-100）
+        double h1 = 0, s1 = 100, v1 = 100 ;    // 终点 HSV（阴影默认 v1=0 完全淡出）
         be::animator::tween::TweenEaseType easeH = be::animator::tween::TWEEN_LINEAR ;
         be::animator::tween::TweenEaseType easeS = be::animator::tween::TWEEN_LINEAR ;
         be::animator::tween::TweenEaseType easeV = be::animator::tween::TWEEN_LINEAR ;
