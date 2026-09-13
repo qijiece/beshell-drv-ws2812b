@@ -1,5 +1,5 @@
 // 时间轴：刻度尺 + 帧动作 lane + 每分段一条 lane（关键帧菱形标记）+ 播放头。
-// 交互：左键拖动 scrub；滚轮横向滚动；Ctrl+滚轮 缩放（光标锚点）。
+// 交互：左键拖动 scrub；中/右键拖动平移（等同滚轮）；滚轮横向滚动；Ctrl+滚轮 缩放（光标锚点）；←/→ 切换选中帧。
 // 悬停 tooltip：第几帧 / 按 fps 算出的时间 / 若为关键帧则列出「哪些段落的哪些属性」。
 import { keyframesAt, endFrame, frameToMs, isKeyframeAt, NUM_PROPS, keyframesOf, normalizeInputText } from './model.js';
 
@@ -49,8 +49,8 @@ export class TimelineView {
                 <label class="tl-field" id="tl-repeat-count-wrap" title="重播次数（额外重播 N 次，总播放 = N+1；留空 = 无限循环）">次数 <input type="number" id="tl-repeat-count" min="0" step="1" placeholder="∞"></label>
                 <label class="tl-field">fps <input type="number" id="tl-fps" min="1" max="240" step="1"></label>
                 <label class="tl-field" title="动画时长（秒，支持小数）；清空/留空为自动">时长(秒) <input type="number" id="tl-length" min="0" step="0.1" placeholder="自动"></label>
-                <button class="tbtn" data-act="zoomOut" title="缩小时间轴（Ctrl＋−）">缩小</button>
-                <button class="tbtn" data-act="zoomIn" title="放大时间轴（Ctrl＋＝）">放大</button>
+                <button class="tbtn" data-act="zoomOut" title="缩小时间轴（Ctrl＋滚轮 / Ctrl＋−）">缩小</button>
+                <button class="tbtn" data-act="zoomIn" title="放大时间轴（Ctrl＋滚轮 / Ctrl＋＝）">放大</button>
                 <span class="tl-info" id="tl-info"></span>
             </div>
             <canvas class="tl-canvas"></canvas>`;
@@ -123,9 +123,18 @@ export class TimelineView {
             this.render();
         }, { passive: false });
 
-        // 左键：标签上按下 = 拖动到别的帧；关键帧上按下 = 拖动移动；否则 scrub。右键：删除关键帧。
-        this._drag = null;   // null | {type:'scrub'} | {type:'kf', si, from, cur} | {type:'label', at}
+        // 左键：标签上按下 = 拖动到别的帧；关键帧上按下 = 拖动移动；否则 scrub。
+        // 中/右键：拖动 = 左右平移（等同滚轮）；右键未移动的点击 = 删除关键帧。
+        this._drag = null;   // null | {type:'scrub'} | {type:'kf', si, from, cur} | {type:'label', at} | {type:'pan', startX, startScrollX, moved}
+        this._panMoved = false;   // 刚结束一次平移（抑制紧随其后的 contextmenu）
         cv.addEventListener('mousedown', (ev) => {
+            if (ev.button === 1 || ev.button === 2) {
+                ev.preventDefault();
+                this._hoverFrame = null;
+                this._drag = { type: 'pan', startX: ev.clientX, startScrollX: this.scrollX, moved: false };
+                this.canvas.style.cursor = 'grabbing';
+                return;
+            }
             if (ev.button !== 0) return;
             this._hoverFrame = null;   // 拖动时隐藏悬停竖线
             const rect = cv.getBoundingClientRect();
@@ -150,6 +159,14 @@ export class TimelineView {
         window.addEventListener('mousemove', (ev) => {
             if (!this._drag) { this._hover(ev); return; }
             if (this._drag.type === 'scrub') { this._scrubTo(ev); return; }
+            if (this._drag.type === 'pan') {
+                const dx = ev.clientX - this._drag.startX;
+                if (Math.abs(dx) > 2) this._drag.moved = true;
+                this.scrollX = this._drag.startScrollX - dx;
+                this._autoFit = false;
+                this.render();
+                return;
+            }
             const rect = cv.getBoundingClientRect();
             if (this._drag.type === 'label') {
                 // 拖动标签：增量源 = 当前所在帧；目标帧已有标签则拒绝（保持原位）
@@ -170,6 +187,7 @@ export class TimelineView {
         });
         window.addEventListener('mouseup', () => {
             if (this._drag) {
+                if (this._drag.type === 'pan' && this._drag.moved) this._panMoved = true;
                 this._drag = null;
                 this.canvas.style.cursor = 'default';
                 this.render();
@@ -184,12 +202,11 @@ export class TimelineView {
             }
         });
         cv.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();   // 画布内禁用浏览器右键菜单
+            if (this._panMoved) { this._panMoved = false; return; }   // 平移后的抬起不算点击
             const rect = cv.getBoundingClientRect();
             const hit = this._keyframeHit(ev.clientX - rect.left, ev.clientY - rect.top);
-            if (hit) {
-                ev.preventDefault();
-                if (this.cb.onDeleteKeyframe) this.cb.onDeleteKeyframe(hit.si, hit.frame);
-            }
+            if (hit && this.cb.onDeleteKeyframe) this.cb.onDeleteKeyframe(hit.si, hit.frame);
         });
         // 双击普通帧：切换空关键帧标记（把该帧转化为关键帧，即使无任何属性值）
         cv.addEventListener('dblclick', (ev) => {
@@ -198,11 +215,17 @@ export class TimelineView {
             if (hit && this.cb.onToggleEmptyKeyframe) this.cb.onToggleEmptyKeyframe(hit.si, hit.frame);
         });
 
-        // 缩放快捷键：Ctrl+＝ 放大，Ctrl+− 缩小（输入框聚焦时不拦截）
+        // 快捷键：←/→ 步进选中帧；Ctrl+＝ 放大，Ctrl+− 缩小（输入框聚焦时不拦截）
         window.addEventListener('keydown', (ev) => {
-            if (!(ev.ctrlKey || ev.metaKey)) return;
             const tag = ev.target && ev.target.tagName;
             if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+            if (!ev.ctrlKey && !ev.metaKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+                ev.preventDefault();
+                const f = Math.max(0, this.getState().frame + (ev.key === 'ArrowRight' ? 1 : -1));
+                this.cb.onScrub && this.cb.onScrub(f);
+                return;
+            }
+            if (!(ev.ctrlKey || ev.metaKey)) return;
             if (ev.key === '=' || ev.key === '+') { ev.preventDefault(); this._zoom(1.25); }
             else if (ev.key === '-') { ev.preventDefault(); this._zoom(1 / 1.25); }
         });

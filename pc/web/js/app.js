@@ -1,7 +1,7 @@
 // 编辑器入口：全局状态 + 三区视图接线 + WASM 载入 + 布局面板 + 导入/导出/往返验证。
 import {
     defaultProject, defaultSection, computeFrame, endFrame, toEngineConfig, fromEngineConfig, setKeyframe,
-    moveKeyframe, removeKeyframesAt, moveFrameLabel, toggleEmptyKeyframe,
+    moveKeyframe, removeKeyframesAt, moveFrameLabel, toggleEmptyKeyframe, normalizeInputText,
 } from './model.js';
 import { PreviewRenderer } from './render.js';
 import { TimelineView } from './timeline.js';
@@ -13,6 +13,31 @@ import { listProjects, saveProject, loadProject, deleteProject, updateProjectCon
 
 function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 数值输入框全局守卫：change 时统一格式归一（全角→半角、去前导零）+ 按 min/max 钳制并写回
+// （「0100」→「100」，「0。5」→「0.5」）；非法输入回退为聚焦前的值；留空放行（重播次数/时长等允许空）。
+// capture 阶段处理，先于各视图自身的 change 处理器生效，覆盖全部现有与动态创建的 input[type=number]。
+function bindNumberInputGuard() {
+    document.addEventListener('focusin', (ev) => {
+        const el = ev.target;
+        if (el instanceof HTMLInputElement && el.type === 'number') el.dataset.lastValid = el.value;
+    }, true);
+    document.addEventListener('change', (ev) => {
+        const el = ev.target;
+        if (!(el instanceof HTMLInputElement) || el.type !== 'number' || el.disabled) return;
+        const norm = normalizeInputText(el.value);
+        if (norm === '') { el.value = ''; return; }
+        const n = parseFloat(norm);
+        if (!Number.isFinite(n)) {
+            el.value = el.dataset.lastValid != null ? el.dataset.lastValid : '';
+            return;
+        }
+        let v = n;
+        if (el.min !== '') v = Math.max(parseFloat(el.min), v);
+        if (el.max !== '') v = Math.min(parseFloat(el.max), v);
+        el.value = String(v);   // 写回规范化结果（去前导零/半角化/钳制后）
+    }, true);
 }
 
 const PRESETS = [
@@ -424,14 +449,19 @@ function openCodeExport() {
     const copyBtn = overlay.querySelector('#code-copy');
 
     const saved = loadExportSetup();
-    pin.value = saved.pin != null ? saved.pin : 8;
+    // 引脚/回环以工程 strip 为准（布局面板编辑的即真理来源），导出设置仅作兜底
+    pin.value = state.project.strip.pin != null ? state.project.strip.pin : (saved.pin != null ? saved.pin : 8);
     length.value = state.project.strip.length;
-    loop.checked = saved.loop != null ? !!saved.loop : false;
+    loop.checked = !!state.project.strip.loop;
 
     const regen = () => {
         const pinV = parseInt(pin.value, 10);
         const lenV = parseInt(length.value, 10);
         const loopV = loop.checked;
+        // 弹窗修改回写工程 strip（与布局面板保持一致）
+        if (Number.isFinite(pinV)) state.project.strip.pin = pinV;
+        state.project.strip.loop = loopV;
+        syncLayoutPanel();
         saveExportSetup({ pin: pinV, loop: loopV });
         const code = generateCode(state.project, { pin: pinV, length: lenV, loop: loopV });
         out.value = code;
@@ -541,6 +571,7 @@ async function verifyEngine() {
 // ---------- 启动 ----------
 
 async function main() {
+    bindNumberInputGuard();
     buildLayoutPanel();
 
     const getState = () => state;
