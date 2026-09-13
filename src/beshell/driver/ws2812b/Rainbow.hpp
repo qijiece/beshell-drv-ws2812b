@@ -60,8 +60,10 @@ namespace be::driver::ws2812b{
         void setCursor(uint32_t frame) ;
 
     private:
-        // 从配置对象恢复一个关键帧（导入用，不抛异常）
-        void restoreKeyframe(JSValueConst jkf) ;
+        // 从配置对象恢复某帧的「分段映射」{ si: { prop: 值|三元组 } }（导入用，不抛异常）
+        void restoreFramePropsMap(uint32_t frame, JSValueConst secMap) ;
+        // 从配置对象恢复某帧某分段的属性表 { prop: 值|三元组 }（导入用，不抛异常）
+        void restoreFrameProps(uint32_t frame, uint32_t si, JSValueConst propMap) ;
         // 从配置对象恢复一个帧动作（jumpTo/playTo，导入用，不抛异常）
         void restoreFrameAction(JSValueConst jact) ;
 

@@ -5,7 +5,8 @@
 import {
     NUM_PROPS, EASE_PROPS, TRANSITIONS, evalProp, setKeyframe, cRound,
     keyframeAt, setKeyframeEase, isDistinctKeyframe,
-    frameActionAt, setFrameAction, removeFrameAction, frameToMs,
+    frameActionAt, setFrameAction, removeFrameAction, frameToMs, frameLabels, endFrame, labelAtFrame, normalizeInputText,
+    hasEmptyKeyframe, hasRealKeyframe,
 } from './model.js';
 import { EaseMenu } from './easemenu.js';
 import { HSVPicker } from './hsvpicker.js';
@@ -37,12 +38,14 @@ export class SidebarView {
 
         this._colorBtns = {};       // channel -> button element
         this._colorPop = null;      // 弹出取色器 {pop, cleanup}
+        this._targetCombo = null;   // 跳转/播放目标下拉 {input, list, cleanup}
         this._numInputs = {};       // prop -> value input
         this._easeMenus = {};       // easeProp -> EaseMenu（列 2 过渡缓动）
         this._tweenMenus = {};      // prop -> EaseMenu（列 3 间补缓动）
         this._enInputs = {};        // enableProp -> checkbox
         this._enRowsByProp = {};    // prop -> { enable, startProp }（禁用通道显示起点值并置灰）
         this._ccwInputs = {};       // ccwProp -> checkbox
+        this._editFrame = null;     // 值输入框聚焦时捕获的帧号（change 在 blur 时触发，可能已 scrub 到别的帧）
         this.render();
     }
 
@@ -51,13 +54,15 @@ export class SidebarView {
         const { project, frame, selection } = this.getState();
         const sec = project.sections[selection];
         this._closeColorPopup();
+        this._closeTargetCombo();
 
         this.container.innerHTML = `
             <div class="sb-sections">
                 <div class="sb-header"><span>分段</span><button class="sb-add" title="添加分段">＋</button></div>
                 <div class="sb-list"></div>
             </div>
-            <div class="sb-props"></div>`;
+            <div class="sb-props"></div>
+            <div class="sb-frame"></div>`;
 
         const list = this.container.querySelector('.sb-list');
         const n = project.sections.length;
@@ -120,29 +125,34 @@ export class SidebarView {
         });
 
         const propsEl = this.container.querySelector('.sb-props');
+        const frameEl = this.container.querySelector('.sb-frame');
         if (!sec) {
             propsEl.innerHTML = `<div class="sb-hint">未选择分段<br>点击「＋」添加一个分段</div>`;
+            frameEl.innerHTML = '';
             return;
         }
-        this._buildProps(propsEl, sec, frame);
+        this._buildProps(propsEl, frameEl, sec, frame);
         this.sync();
     }
 
-    _buildProps(el, sec, frame) {
-        const wrap = document.createElement('div');
-        wrap.innerHTML = `
+    _buildProps(propsEl, frameEl, sec, frame) {
+        propsEl.innerHTML = `
             <div class="sb-subheader">${sec.name} · 属性</div>
-            <div class="sb-props-body"></div>
-            <div class="sb-group sb-frame">
-                <div class="sb-subheader">选中帧</div>
+            <div class="sb-props-body"></div>`;
+
+        frameEl.innerHTML = `
+            <div class="sb-frame-head">
+                <div class="sb-subheader">帧动作 (Action)</div>
                 <div class="sb-frame-info"></div>
-                <label class="sb-field">jumpTo <input type="number" id="sb-jump" step="1" placeholder="无"></label>
-                <label class="sb-field">jumpCount <input type="number" id="sb-jumpc" step="1" min="-1"></label>
-                <label class="sb-field">playTo <input type="number" id="sb-play" step="1" placeholder="无"></label>
-                <label class="sb-field">playCount <input type="number" id="sb-playc" step="1" min="-1"></label>
-                <button class="sb-clr-act" id="sb-clract">清除本帧动作</button>
-            </div>`;
-        el.appendChild(wrap);
+            </div>
+            <label class="sb-field" title="给当前帧命名；时间轴上会显示该名字，并可作为「跳转到 / 播放到」的下拉选项"><span class="sb-field-label">命名</span><input type="text" id="sb-label" placeholder="帧名"></label>
+            <label class="sb-field" title="到达本帧时立即跳转到目标帧（可输入帧号或标签名，或从下拉选择；留空 = 无）"><span class="sb-field-label">跳转到</span><span class="sb-combo"><input class="sb-combo-input" id="sb-jump" placeholder="帧号" autocomplete="off"><span class="sb-combo-arrow">▾</span></span><button type="button" class="sb-clear-target" id="sb-clearjump" title="清除跳转目标">清除</button></label>
+            <label class="sb-field" title="跳转触发次数（0 = 不触发，-1 = 不限）"><span class="sb-field-label">跳转次数</span><input type="number" id="sb-jumpc" step="1" min="-1"></label>
+            <label class="sb-field" title="到达本帧时播放到目标帧（默认到达后停止；勾选「然后继续」则继续原顺序播放；可输入帧号或标签名，或从下拉选择；中途遇到其他动作会改向新目标；留空 = 无）"><span class="sb-field-label">播放到</span><span class="sb-combo"><input class="sb-combo-input" id="sb-play" placeholder="帧号" autocomplete="off"><span class="sb-combo-arrow">▾</span></span><button type="button" class="sb-clear-target" id="sb-clearplay" title="清除播放目标">清除</button></label>
+            <label class="sb-field" title="播放触发次数（0 = 不触发，-1 = 不限）"><span class="sb-field-label">播放次数</span><input type="number" id="sb-playc" step="1" min="-1"></label>
+            <label class="sb-field sb-stop" title="勾选后，播放到目标帧后继续原顺序播放；否则到达即停止"><span class="sb-field-label"></span><input type="checkbox" id="sb-resume"><span>然后继续</span></label>
+            <label class="sb-field sb-stop" title="到达本帧即停止播放（优先于跳转 / 播放）"><span class="sb-field-label"></span><input type="checkbox" id="sb-stop"><span>停止</span></label>
+            <button class="sb-clr-act" id="sb-clract">清除本帧动作</button>`;
 
         this._numInputs = {};
         this._easeMenus = {};
@@ -152,7 +162,7 @@ export class SidebarView {
         this._ccwInputs = {};
         this._colorBtns = {};
 
-        const body = el.querySelector('.sb-props-body');
+        const body = propsEl.querySelector('.sb-props-body');
 
         // 列头：渲染过渡 / 动画间补（两列缓动函数）
         const colHead = document.createElement('div');
@@ -161,8 +171,8 @@ export class SidebarView {
         body.appendChild(colHead);
 
         // 标量属性：位置 / 长度（各独享一行）
-        this._propRow(body, sec, { label: '位置(x)', prop: 'x', step: 0.5 });
-        this._propRow(body, sec, { label: '长度', prop: 'len', step: 0.5, min: 1 });
+        this._propRow(body, sec, { label: '位置(x)', prop: 'x', step: 1 });
+        this._propRow(body, sec, { label: '长度', prop: 'len', step: 1, min: 1 });
 
         // 三种过渡块
         for (const tr of TRANSITIONS) {
@@ -170,27 +180,30 @@ export class SidebarView {
         }
 
         // 帧动作
-        const jump = el.querySelector('#sb-jump');
-        const jumpc = el.querySelector('#sb-jumpc');
-        const play = el.querySelector('#sb-play');
-        const playc = el.querySelector('#sb-playc');
-        const commitAction = () => {
-            const f = this.getState().frame;
-            const jt = jump.value === '' ? -1 : parseInt(jump.value);
-            const pt = play.value === '' ? -1 : parseInt(play.value);
-            const jc = jumpc.value === '' ? 1 : parseInt(jumpc.value);
-            const pc = playc.value === '' ? 1 : parseInt(playc.value);
-            setFrameAction(this.getState().project, f, jt, jc, pt, pc);
-            if (this.cb.onChange) this.cb.onChange();
-        };
+        const jump = frameEl.querySelector('#sb-jump');
+        const jumpc = frameEl.querySelector('#sb-jumpc');
+        const play = frameEl.querySelector('#sb-play');
+        const playc = frameEl.querySelector('#sb-playc');
+        const stopCb = frameEl.querySelector('#sb-stop');
+        const resumeCb = frameEl.querySelector('#sb-resume');
+        const labelIn = frameEl.querySelector('#sb-label');
+        const commitAction = () => this._commitFrameAction();
         jump.addEventListener('change', commitAction);
         jumpc.addEventListener('change', commitAction);
         play.addEventListener('change', commitAction);
         playc.addEventListener('change', commitAction);
-        el.querySelector('#sb-clract').addEventListener('click', () => {
+        stopCb.addEventListener('change', commitAction);
+        resumeCb.addEventListener('change', commitAction);
+        labelIn.addEventListener('change', commitAction);
+        frameEl.querySelector('#sb-clract').addEventListener('click', () => {
             removeFrameAction(this.getState().project, this.getState().frame);
             if (this.cb.onChange) this.cb.onChange();
         });
+        frameEl.querySelector('#sb-clearjump').addEventListener('click', () => this._clearTarget('jump'));
+        frameEl.querySelector('#sb-clearplay').addEventListener('click', () => this._clearTarget('play'));
+        // 跳转/播放目标：自定义下拉（每项一行：标签名 · 帧号 · 时间秒）
+        this._initTargetCombo(jump);
+        this._initTargetCombo(play);
     }
 
     // 一行属性：标签 | 值输入 | 过渡缓动(可选) | 间补缓动
@@ -222,8 +235,11 @@ export class SidebarView {
         if (opts.min !== undefined) inp.min = opts.min;
         if (opts.max !== undefined) inp.max = opts.max;
         inp.className = 'sb-val-input';
+        // 聚焦时记住当前帧：change 在 blur 时触发，时间轴在 mousedown 已 scrub 到新帧，
+        // 若按提交时的帧号写入会误改关键帧，故按聚焦时的帧号提交。
+        inp.addEventListener('focus', () => { this._editFrame = this.getState().frame; });
         inp.addEventListener('change', () => {
-            const v = parseFloat(inp.value);
+            const v = parseFloat(normalizeInputText(inp.value));
             if (isNaN(v)) { this.sync(); return; }
             this._writeKeyframe(sec, opts.prop, v);
         });
@@ -394,6 +410,164 @@ export class SidebarView {
         }
     }
 
+    // ---------- 帧动作提交 + 跳转/播放目标下拉 ----------
+
+    // 读取跳转/播放/停止/标记输入，写入当前帧（与 C++ setFrameAction 语义一致）
+    _commitFrameAction() {
+        const { project, frame } = this.getState();
+        const jump = this.container.querySelector('#sb-jump');
+        const jumpc = this.container.querySelector('#sb-jumpc');
+        const play = this.container.querySelector('#sb-play');
+        const playc = this.container.querySelector('#sb-playc');
+        const stopCb = this.container.querySelector('#sb-stop');
+        const resumeCb = this.container.querySelector('#sb-resume');
+        const labelIn = this.container.querySelector('#sb-label');
+        if (!jump) return;
+        // 解析目标：纯数字 = 帧号；否则按已标记帧名解析；无效 = -1（无）
+        const resolveTarget = (v) => {
+            const s = normalizeInputText(v);
+            if (s === '') return -1;
+            if (/^\d+$/.test(s)) return parseInt(s, 10);
+            if (s === '开始帧') return 0;
+            if (s === '结束帧') return endFrame(project);
+            const found = frameLabels(project).find(l => l.label === s);
+            return found ? found.frame : -1;
+        };
+        const jt = resolveTarget(jump.value);
+        const pt = resolveTarget(play.value);
+        const jcN = normalizeInputText(jumpc.value);
+        const pcN = normalizeInputText(playc.value);
+        const jc = jcN === '' ? 1 : parseInt(jcN);
+        const pc = pcN === '' ? 1 : parseInt(pcN);
+        // 标签名不得重名（同名的其他帧拒绝并清空）
+        let label = (labelIn.value || '').trim();
+        if (label) {
+            const dup = frameLabels(project).some(l => l.frame !== frame && l.label === label);
+            if (dup) { label = ''; labelIn.value = ''; }
+        }
+        setFrameAction(project, frame, jt, jc, pt, pc, stopCb.checked, label, resumeCb.checked);
+        if (this.cb.onChange) this.cb.onChange();
+    }
+
+    // 清除指定目标的跳转/播放（保留该帧其他动作）
+    _clearTarget(which) {
+        const input = this.container.querySelector(which === 'jump' ? '#sb-jump' : '#sb-play');
+        if (input) {
+            input.value = '';
+            this._commitFrameAction();
+        }
+    }
+
+    // 目标帧的回显名：真实标签名优先；否则开始帧/结束帧保持虚拟名称；最后退回帧号
+    _targetName(project, frame) {
+        const label = labelAtFrame(project, frame);
+        if (label) return label;
+        if (frame === 0) return '开始帧';
+        if (frame === endFrame(project)) return '结束帧';
+        return String(frame);
+    }
+
+    // 给跳转/播放输入框挂上自定义下拉（每项一行：标签名 · 帧号 · 时间秒）
+    _initTargetCombo(input) {
+        // 抑制浏览器原生自动填充/建议下拉（白/灰底），避免与自定义深色下拉叠加
+        input.setAttribute('autocomplete', 'off');
+        input.setAttribute('autocorrect', 'off');
+        input.setAttribute('autocapitalize', 'off');
+        input.setAttribute('spellcheck', 'false');
+        input.readOnly = true;   // 只读占位：聚焦时才恢复可编辑，进一步阻断自动填充
+        input.addEventListener('focus', () => {
+            input.readOnly = false;
+            this._openTargetCombo(input);
+        });
+        input.addEventListener('click', () => this._openTargetCombo(input));
+        input.addEventListener('blur', () => {
+            // 延迟到 change 提交之后；若已重新聚焦则不改
+            setTimeout(() => {
+                if (document.activeElement !== input) input.readOnly = true;
+            }, 0);
+        });
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'ArrowDown') { ev.preventDefault(); this._openTargetCombo(input); }
+        });
+        // 点击组合框本体的空白/箭头区域也聚焦输入框（触发 focus → 打开下拉）
+        const wrap = input.closest('.sb-combo');
+        if (wrap) wrap.addEventListener('click', () => input.focus());
+    }
+
+    _openTargetCombo(input) {
+        this._closeTargetCombo();
+        const { project } = this.getState();
+        // 虚拟标签「开始帧 / 结束帧」始终可用，与用户命名帧合并后按帧号排序
+        const end = endFrame(project);
+        const items = [
+            { frame: 0, label: '开始帧', virtual: true },
+            { frame: end, label: '结束帧', virtual: true },
+            ...frameLabels(project).map(l => ({ frame: l.frame, label: l.label, virtual: false })),
+        ].sort((a, b) => a.frame - b.frame);
+
+        const list = document.createElement('div');
+        list.className = 'sb-combo-list';
+        for (const l of items) {
+            const item = document.createElement('div');
+            item.className = 'sb-combo-item';
+            const sec = (frameToMs(project, l.frame) / 1000).toFixed(3);
+            item.innerHTML =
+                `<span class="ci-label"></span>` +
+                `<span class="ci-frame">帧 ${l.frame}</span>` +
+                `<span class="ci-time">${sec}秒</span>`;
+            item.querySelector('.ci-label').textContent = l.label;   // 文本节点，避免注入
+            item.addEventListener('mousedown', (ev) => {
+                ev.preventDefault();   // 保持焦点，避免 blur 抢先关闭
+                // 选中后保持标签名（用户命名帧与虚拟标签「开始帧/结束帧」都保留名称）
+                input.value = l.label;
+                this._closeTargetCombo();
+                this._commitFrameAction();
+            });
+            list.appendChild(item);
+        }
+        document.body.appendChild(list);
+
+        // 以组合框本体（wrapper）为锚点定位；打开期间高亮本体边框（对齐缓动菜单触发按钮）
+        const wrap = input.closest('.sb-combo') || input;
+        wrap.classList.add('open');
+        const rect = wrap.getBoundingClientRect();
+        list.style.left = rect.left + 'px';
+        list.style.top = (rect.bottom + 2) + 'px';
+        list.style.width = Math.max(rect.width, 200) + 'px';
+        // 底部空间不足时向上弹出
+        if (rect.bottom + 2 + list.offsetHeight > window.innerHeight - 8) {
+            list.style.top = (rect.top - list.offsetHeight - 2) + 'px';
+        }
+
+        const onDocDown = (ev) => {
+            if (list.contains(ev.target) || wrap.contains(ev.target)) return;
+            this._closeTargetCombo();
+        };
+        const onKey = (ev) => { if (ev.key === 'Escape') this._closeTargetCombo(); };
+        // 延迟绑定，避免当前 focus/click 立即触发关闭
+        setTimeout(() => {
+            document.addEventListener('mousedown', onDocDown);
+            window.addEventListener('keydown', onKey);
+        }, 0);
+
+        this._targetCombo = {
+            input, list, wrap,
+            cleanup: () => {
+                document.removeEventListener('mousedown', onDocDown);
+                window.removeEventListener('keydown', onKey);
+            },
+        };
+    }
+
+    _closeTargetCombo() {
+        if (this._targetCombo) {
+            if (this._targetCombo.cleanup) this._targetCombo.cleanup();
+            if (this._targetCombo.wrap) this._targetCombo.wrap.classList.remove('open');
+            this._targetCombo.list.remove();
+            this._targetCombo = null;
+        }
+    }
+
     // 原地同步数值（帧变化 / 编辑后调用，避免重建取色器）
     sync() {
         const { project, frame, selection } = this.getState();
@@ -463,17 +637,38 @@ export class SidebarView {
         // 选中帧信息 + 帧动作
         const info = this.container.querySelector('.sb-frame-info');
         if (info) {
-            info.innerHTML = `帧 ${frame} · ${frameToMs(project, frame).toFixed(1)} ms`;
+            let badge = '';
+            if (hasRealKeyframe(sec, frame)) badge += ' · <span class="sb-kf-badge">关键帧</span>';
+            if (hasEmptyKeyframe(sec, frame)) badge += ' · <span class="sb-kf-badge">空关键帧</span>';
+            info.innerHTML = `帧 ${frame} · ${(frameToMs(project, frame) / 1000).toFixed(3)} 秒${badge}`;
         }
         const act = frameActionAt(project, frame);
         const jump = this.container.querySelector('#sb-jump');
         const jumpc = this.container.querySelector('#sb-jumpc');
         const play = this.container.querySelector('#sb-play');
         const playc = this.container.querySelector('#sb-playc');
-        if (jump) jump.value = (act && act.jumpTo >= 0) ? act.jumpTo : '';
-        if (jumpc) jumpc.value = (act && act.jumpTo >= 0) ? act.jumpCount : 1;
-        if (play) play.value = (act && act.playTo >= 0) ? act.playTo : '';
-        if (playc) playc.value = (act && act.playTo >= 0) ? act.playCount : 1;
+        const stopCb = this.container.querySelector('#sb-stop');
+        const resumeCb = this.container.querySelector('#sb-resume');
+        const labelIn = this.container.querySelector('#sb-label');
+        // 当前正在编辑的输入框不覆盖，避免与用户输入冲突（与属性值输入框一致）
+        const hasJump = !!(act && act.jumpTo >= 0);
+        const hasPlay = !!(act && act.playTo >= 0);
+        if (jump && document.activeElement !== jump) jump.value = hasJump ? this._targetName(project, act.jumpTo) : '';
+        if (jumpc) {
+            jumpc.disabled = !hasJump;   // 未设跳转目标时禁用，次数随之无效
+            if (document.activeElement !== jumpc) jumpc.value = hasJump ? act.jumpCount : 1;
+        }
+        if (play && document.activeElement !== play) play.value = hasPlay ? this._targetName(project, act.playTo) : '';
+        if (playc) {
+            playc.disabled = !hasPlay;
+            if (document.activeElement !== playc) playc.value = hasPlay ? act.playCount : 1;
+        }
+        if (stopCb) stopCb.checked = !!(act && act.stop);
+        if (resumeCb) {
+            resumeCb.disabled = !hasPlay;   // 无播放目标时「然后继续」无效
+            resumeCb.checked = hasPlay && !!(act && act.resume);
+        }
+        if (labelIn && document.activeElement !== labelIn) labelIn.value = (act && act.label) ? act.label : '';
     }
 
     // 某属性在当前帧是否为「有效关键帧」：帧 0 恒为原点；帧>0 需该帧有关键帧且其值与前一个关键帧不同
@@ -488,7 +683,7 @@ export class SidebarView {
     }
 
     _writeKeyframe(sec, prop, value) {
-        const { frame } = this.getState();
+        const frame = (this._editFrame != null) ? this._editFrame : this.getState().frame;
         const existing = keyframeAt(sec, prop, frame);
         setKeyframe(sec, prop, frame, value, existing ? existing.ease : 'linear', existing ? existing.easeS : 1.70158);
         this._updateAfterEdit(sec);

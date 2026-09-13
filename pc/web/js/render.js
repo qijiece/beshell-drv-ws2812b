@@ -79,6 +79,8 @@ export class PreviewRenderer {
         const px = this.getState().framePixels; // computeFrame(project, frame)
         const n = px ? px.length : 0;
         const { ledW, ledH, spacing } = this.layout;
+        // 「播放时隐藏灯带 UI」：勾选且播放中时不绘制分段框/handle/端点图标/灯珠序号
+        const hideUi = !!(this.getState().hideUiWhenPlaying && this.getState().playing);
 
         // 背景网格（世界坐标）
         this._drawGrid(w, h);
@@ -86,11 +88,12 @@ export class PreviewRenderer {
         for (let i = 0; i < n; i++) {
             const r = this.ledScreenRect(i);
             const col = px[i];
-            // null = 未被分段/阴影覆盖 → 插座色；否则按实际颜色绘制（含 v=0 的纯黑）
+            // null = 未被分段/阴影覆盖（或未计算出颜色）→ 纯黑（与真实灯珠灭灯一致）；
+            // 仅保留极淡描边示意灯珠位置，其余按实际颜色绘制（含 v=0 的纯黑）
             const lit = col !== null;
             const [rr, gg, bb] = col || [0, 0, 0];
-            ctx.fillStyle = lit ? `rgb(${rr},${gg},${bb})` : '#37434f';
-            ctx.strokeStyle = lit ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.3)';
+            ctx.fillStyle = `rgb(${rr},${gg},${bb})`;
+            ctx.strokeStyle = lit ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.12)';
             ctx.lineWidth = 1;
             const rad = Math.min(3 * this.scale, ledH * this.scale * 0.3);
             this._roundRect(ctx, r.x, r.y, r.w, r.h, rad);
@@ -99,7 +102,7 @@ export class PreviewRenderer {
 
             // 灯珠序号（0 计数）：间距足够时绘制在灯珠下方，小字号、留出间隔、弱化不抢注意力
             const pitch = ledW + spacing;
-            if (pitch * this.scale >= 14) {
+            if (!hideUi && pitch * this.scale >= 14) {
                 ctx.fillStyle = 'rgba(255,255,255,0.28)';
                 ctx.font = `${Math.max(7, Math.round(7 * this.scale))}px ui-monospace,Consolas,monospace`;
                 ctx.textAlign = 'center';
@@ -110,10 +113,12 @@ export class PreviewRenderer {
         ctx.textAlign = 'start';
         ctx.textBaseline = 'alphabetic';
 
-        this._drawSectionOverlay(ctx, frame);
-        this._drawStripHandle(ctx);
-        this._drawEndpointIcons(ctx, frame);
-        this._drawEndpointHover(ctx);
+        if (!hideUi) {
+            this._drawSectionOverlay(ctx, frame);
+            this._drawStripHandle(ctx);
+            this._drawEndpointIcons(ctx, frame);
+            this._drawEndpointHover(ctx);
+        }
     }
 
     _drawGrid(w, h) {

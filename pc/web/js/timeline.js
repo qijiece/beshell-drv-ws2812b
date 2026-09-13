@@ -1,8 +1,9 @@
 // 时间轴：刻度尺 + 帧动作 lane + 每分段一条 lane（关键帧菱形标记）+ 播放头。
 // 交互：左键拖动 scrub；滚轮横向滚动；Ctrl+滚轮 缩放（光标锚点）。
 // 悬停 tooltip：第几帧 / 按 fps 算出的时间 / 若为关键帧则列出「哪些段落的哪些属性」。
-import { keyframesAt, endFrame, frameToMs, isKeyframeAt, NUM_PROPS, keyframesOf } from './model.js';
+import { keyframesAt, endFrame, frameToMs, isKeyframeAt, NUM_PROPS, keyframesOf, normalizeInputText } from './model.js';
 
+const LABEL_H = 24;   // 顶部帧标记标签条：标签尖头居中指向所属帧
 const RULER_H = 32;
 const RULER_SPLIT = 16;   // 刻度尺上下分界：上半帧序号 / 下半秒
 const ACT_H = 16;
@@ -19,6 +20,14 @@ export class TimelineView {
         this._raf = null;
         this._lastTick = 0;
         this._repeatRemaining = -1;   // 预览循环剩余次数（-1=无限）
+        this._dir = 1;                // 播放方向：+1 顺放 / -1 倒放（playTo 改向用）
+        this._end = 0;                // 当前播放终点（帧号）
+        this._fromFrame = 0;          // 本次播放起始帧（循环回绕目标）
+        this._playToActive = false;   // playTo 改向进行中
+        this._playToResume = false;   // playTo 到达后是否继续原顺序播放（否则停止）
+        this._savedDir = 1;           // playTo 进入前的方向（到达后恢复）
+        this._savedEnd = 0;           // playTo 进入前的终点（到达后恢复）
+        this._runActions = [];        // 播放期帧动作运行时计数（jump/play 次数每次触发递减）
         this._hoverFrame = null;      // 悬停帧竖线（帧对齐）
 
         this.root = container;
@@ -68,13 +77,13 @@ export class TimelineView {
             btn.addEventListener('click', () => this._act(btn.dataset.act));
         });
         this.fpsInput.addEventListener('change', () => {
-            const v = Math.max(1, Math.min(240, parseInt(this.fpsInput.value) || 60));
+            const v = Math.max(1, Math.min(240, parseInt(normalizeInputText(this.fpsInput.value)) || 60));
             this.fpsInput.value = v;
             if (this.cb.onFpsChange) this.cb.onFpsChange(v);
         });
         this.lenInput.addEventListener('change', () => {
             const { project } = this.getState();
-            const raw = this.lenInput.value.trim();
+            const raw = normalizeInputText(this.lenInput.value);
             if (raw === '') {
                 if (this.cb.onLengthChange) this.cb.onLengthChange(0);  // 清空 = 自动
                 return;
@@ -91,7 +100,7 @@ export class TimelineView {
         });
         this.repeatCountInput.addEventListener('change', () => {
             const { project } = this.getState();
-            const raw = this.repeatCountInput.value.trim();
+            const raw = normalizeInputText(this.repeatCountInput.value);
             project.repeatCount = raw === '' ? -1 : Math.max(0, parseInt(raw, 10) || 0);
             this.render();
         });
@@ -114,13 +123,21 @@ export class TimelineView {
             this.render();
         }, { passive: false });
 
-        // 左键：关键帧上按下 = 拖动移动；否则 scrub。右键：删除关键帧。
-        this._drag = null;   // null | {type:'scrub'} | {type:'kf', si, from, cur}
+        // 左键：标签上按下 = 拖动到别的帧；关键帧上按下 = 拖动移动；否则 scrub。右键：删除关键帧。
+        this._drag = null;   // null | {type:'scrub'} | {type:'kf', si, from, cur} | {type:'label', at}
         cv.addEventListener('mousedown', (ev) => {
             if (ev.button !== 0) return;
             this._hoverFrame = null;   // 拖动时隐藏悬停竖线
             const rect = cv.getBoundingClientRect();
-            const hit = this._keyframeHit(ev.clientX - rect.left, ev.clientY - rect.top);
+            const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+            const lhit = this._labelHit(mx, my);
+            if (lhit) {
+                this._drag = { type: 'label', at: lhit.frame };
+                this.canvas.style.cursor = 'grabbing';
+                this.render();
+                return;
+            }
+            const hit = this._keyframeHit(mx, my);
             if (hit) {
                 this._drag = { type: 'kf', si: hit.si, from: hit.frame, cur: hit.frame };
                 this.canvas.style.cursor = 'grabbing';
@@ -133,8 +150,17 @@ export class TimelineView {
         window.addEventListener('mousemove', (ev) => {
             if (!this._drag) { this._hover(ev); return; }
             if (this._drag.type === 'scrub') { this._scrubTo(ev); return; }
-            // 拖动关键帧：该分段在此帧的全部关键帧一起平移（增量源 = 当前所在帧）
             const rect = cv.getBoundingClientRect();
+            if (this._drag.type === 'label') {
+                // 拖动标签：增量源 = 当前所在帧；目标帧已有标签则拒绝（保持原位）
+                const f = Math.max(0, Math.round(this._xToFrame(ev.clientX - rect.left)));
+                if (f !== this._drag.at && this.cb.onMoveLabel) {
+                    if (this.cb.onMoveLabel(this._drag.at, f)) this._drag.at = f;
+                }
+                this.render();
+                return;
+            }
+            // 拖动关键帧：该分段在此帧的全部关键帧一起平移（增量源 = 当前所在帧）
             const f = Math.max(0, Math.round(this._xToFrame(ev.clientX - rect.left)));
             if (f !== this._drag.cur && this.cb.onMoveKeyframe) {
                 const from = this._drag.cur;
@@ -164,6 +190,12 @@ export class TimelineView {
                 ev.preventDefault();
                 if (this.cb.onDeleteKeyframe) this.cb.onDeleteKeyframe(hit.si, hit.frame);
             }
+        });
+        // 双击普通帧：切换空关键帧标记（把该帧转化为关键帧，即使无任何属性值）
+        cv.addEventListener('dblclick', (ev) => {
+            const rect = cv.getBoundingClientRect();
+            const hit = this._laneHit(ev.clientX - rect.left, ev.clientY - rect.top);
+            if (hit && this.cb.onToggleEmptyKeyframe) this.cb.onToggleEmptyKeyframe(hit.si, hit.frame);
         });
 
         // 缩放快捷键：Ctrl+＝ 放大，Ctrl+− 缩小（输入框聚焦时不拦截）
@@ -213,11 +245,23 @@ export class TimelineView {
     _togglePlay() {
         this.playing = !this.playing;
         this.root.querySelector('[data-act="play"]').textContent = this.playing ? '⏸' : '▶';
+        this.cb.onPlayStateChange && this.cb.onPlayStateChange(this.playing);
         if (this.playing) {
             const { project, frame } = this.getState();
             // 停在最后一帧（或之后）时，直接从第一帧开始播放
             if (frame >= endFrame(project)) this.cb.onScrub && this.cb.onScrub(0);
+            this._fromFrame = this.getState().frame;
             this._repeatRemaining = project.repeatCount;
+            this._dir = 1;
+            this._end = endFrame(project);
+            this._playToActive = false;
+            this._playToResume = false;
+            this._savedDir = 1;
+            this._savedEnd = this._end;
+            // 帧动作运行时计数快照（播放开始恢复初始值，播放中每次触发递减）
+            this._runActions = project.frameActions.map(a => ({
+                frame: a.frame, jumpTo: a.jumpTo, jumpCount: a.jumpCount, playTo: a.playTo, playCount: a.playCount, stop: !!a.stop, resume: !!a.resume,
+            }));
             this._lastTick = performance.now();
             this._stepPlay();
         } else if (this._raf) {
@@ -234,18 +278,75 @@ export class TimelineView {
         const msPerFrame = 1000 / project.fps;
         if (dt >= msPerFrame) {
             this._lastTick = now;
-            const end = endFrame(project);
-            let nf = frame + 1;
-            if (nf > end) {
+
+            // 按方向推进一帧
+            let f = frame + this._dir;
+
+            // 帧动作：jumpTo 当 tick 链式传送（目标帧动作可再触发），playTo 改向播放；
+            // 镜像 C++ Timeline::loop 的顺序，仅在同一 tick 内解决跳转/改向，不补帧。
+            let chainDepth = 0;
+            while (true) {
+                const act = this._runActions.find(a => a.frame === f);
+                if (!act) break;
+                if (act.stop) {
+                    // 到达本帧即停止：先应用本帧（对齐 C++ 先 applyTracks 再 stop），避免停在前一帧
+                    this.cb.onScrub && this.cb.onScrub(f);
+                    this._togglePlay();
+                    return;
+                }
+                if (act.jumpTo >= 0 && act.jumpCount !== 0) {
+                    if (act.jumpCount > 0) act.jumpCount--;   // -1 不限次数，不递减
+                    if (this._playToActive) {                 // 中途遇到跳转：放弃 playTo 目标，恢复原方向/终点
+                        this._playToActive = false;
+                        this._playToResume = false;
+                        this._dir = this._savedDir;
+                        this._end = this._savedEnd;
+                    }
+                    f = act.jumpTo;
+                    if (++chainDepth > 64) { this._togglePlay(); return; }
+                    continue;                                  // 链式触发目标帧动作
+                }
+                if (act.playTo >= 0 && act.playCount !== 0 && act.playTo !== f) {
+                    if (act.playCount > 0) act.playCount--;
+                    if (!this._playToActive) {
+                        this._savedDir = this._dir;            // 记录进入前方向与终点，到达后恢复
+                        this._savedEnd = this._end;
+                    }
+                    this._dir = act.playTo > f ? 1 : -1;
+                    this._end = act.playTo;
+                    this._playToActive = true;
+                    this._playToResume = !!act.resume;         // 到达后是否继续（否则停止）
+                }
+                break;
+            }
+
+            // 应用本帧（渲染）
+            this.cb.onScrub && this.cb.onScrub(f);
+
+            // playTo 到达目标帧：勾选「然后继续」则恢复原方向/终点继续，否则停止
+            if (this._playToActive && f === this._end) {
+                if (this._playToResume) {
+                    this._playToActive = false;
+                    this._playToResume = false;
+                    this._dir = this._savedDir;
+                    this._end = this._savedEnd;
+                } else {
+                    this._togglePlay();
+                    return;
+                }
+            }
+
+            // 终点判定（渲染之后，与 C++ 一致）
+            const atEnd = !this._playToActive && (this._dir > 0 ? f >= this._end : f <= this._end);
+            if (atEnd) {
                 if (project.repeat && this._repeatRemaining !== 0) {
                     if (this._repeatRemaining > 0) this._repeatRemaining--;
-                    nf = 0;
+                    this.cb.onScrub && this.cb.onScrub(this._fromFrame);
                 } else {
                     this._togglePlay();   // 不循环或重播次数用完：停在末帧
                     return;
                 }
             }
-            this.cb.onScrub && this.cb.onScrub(nf);
         }
         this._raf = requestAnimationFrame(this._stepPlay);
     };
@@ -279,7 +380,10 @@ export class TimelineView {
         const endX = this._frameToX(end);
 
         const laneCount = project.sections.length;
-        const totalH = RULER_H + ACT_H + laneCount * LANE_H;
+        const totalH = LABEL_H + RULER_H + ACT_H + laneCount * LANE_H;
+
+        // 帧标记标签条（时间轴上方，尖头居中指向所属帧）
+        this._drawLabels(ctx, project, w);
 
         // 刻度尺（无限，铺满整个可见宽度）
         this._drawRuler(ctx, w, project);
@@ -289,14 +393,14 @@ export class TimelineView {
 
         // 分段 lane
         project.sections.forEach((s, li) => {
-            const y = RULER_H + ACT_H + li * LANE_H;
+            const y = LABEL_H + RULER_H + ACT_H + li * LANE_H;
             this._drawLane(ctx, s, li, y, w);
         });
 
         // 空轴（动画结束之后）：半透明深色覆盖，与动画范围形成深浅对比
         if (endX < w) {
             ctx.fillStyle = 'rgba(0,0,0,0.45)';
-            ctx.fillRect(Math.max(PAD_LEFT, endX), 0, w - Math.max(PAD_LEFT, endX), Math.max(totalH, RULER_H));
+            ctx.fillRect(Math.max(PAD_LEFT, endX), 0, w - Math.max(PAD_LEFT, endX), totalH);
         }
 
         // 动画结束标记：贯穿所有 lane 的虚线 + 顶端「结束」标签
@@ -304,12 +408,12 @@ export class TimelineView {
             ctx.strokeStyle = 'rgba(255,255,255,0.35)';
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 4]);
-            ctx.beginPath(); ctx.moveTo(endX, RULER_H); ctx.lineTo(endX, Math.max(totalH, RULER_H)); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(endX, LABEL_H + RULER_H); ctx.lineTo(endX, totalH); ctx.stroke();
             ctx.setLineDash([]);
             ctx.fillStyle = 'rgba(255,255,255,0.55)';
             ctx.font = '10px ui-monospace,Consolas,monospace';
             ctx.textAlign = 'left';
-            ctx.fillText('结束', endX + 4, RULER_SPLIT - 6);
+            ctx.fillText('结束', endX + 4, LABEL_H + RULER_SPLIT - 6);
             ctx.textAlign = 'start';
         }
 
@@ -319,7 +423,7 @@ export class TimelineView {
             if (hx >= PAD_LEFT && hx <= w) {
                 ctx.strokeStyle = 'rgba(255,255,255,0.32)';
                 ctx.lineWidth = 1;
-                ctx.beginPath(); ctx.moveTo(hx, 0); ctx.lineTo(hx, Math.max(totalH, RULER_H)); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(hx, 0); ctx.lineTo(hx, totalH); ctx.stroke();
             }
         }
 
@@ -328,7 +432,7 @@ export class TimelineView {
         if (px >= PAD_LEFT && px <= w) {
             ctx.strokeStyle = '#ff4d4f';
             ctx.lineWidth = 1.5;
-            ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, Math.max(totalH, RULER_H)); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, totalH); ctx.stroke();
             // 顶三角
             ctx.fillStyle = '#ff4d4f';
             ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px - 5, 8); ctx.lineTo(px + 5, 8); ctx.closePath(); ctx.fill();
@@ -351,12 +455,13 @@ export class TimelineView {
 
     _drawRuler(ctx, w, project) {
         const fps = project.fps || 60;
+        const y0 = LABEL_H;           // 刻度尺整体下移，顶部让给帧标记标签条
         ctx.fillStyle = '#151920';
-        ctx.fillRect(0, 0, w, RULER_H);
+        ctx.fillRect(0, y0, w, RULER_H);
         ctx.font = '10px ui-monospace,Consolas,monospace';
         ctx.textAlign = 'center';
 
-        const splitY = RULER_SPLIT;   // 上半：帧序号，下半：秒
+        const splitY = y0 + RULER_SPLIT;   // 上半：帧序号，下半：秒
 
         // 可见帧范围（无限轴，铺满整个宽度）
         const f0 = Math.max(0, Math.floor(this._xToFrame(PAD_LEFT)));
@@ -385,17 +490,66 @@ export class TimelineView {
             if (x < PAD_LEFT - 6 || x > w) continue;
             ctx.strokeStyle = 'rgba(255,255,255,0.16)';
             ctx.beginPath(); ctx.moveTo(x, splitY); ctx.lineTo(x, splitY + 4); ctx.stroke();
-            ctx.fillText(Number.isInteger(sec) ? String(sec) : sec.toFixed(1), x, RULER_H - 4);
+            ctx.fillText((Number.isInteger(sec) ? String(sec) : sec.toFixed(1)) + '秒', x, y0 + RULER_H - 4);
         }
 
         ctx.textAlign = 'start';       // 恢复，避免影响 lane 名/动作文本
         ctx.strokeStyle = 'rgba(255,255,255,0.1)';
         ctx.beginPath(); ctx.moveTo(0, splitY - 0.5); ctx.lineTo(w, splitY - 0.5); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(0, RULER_H - 0.5); ctx.lineTo(w, RULER_H - 0.5); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, y0 + RULER_H - 0.5); ctx.lineTo(w, y0 + RULER_H - 0.5); ctx.stroke();
+    }
+
+    // 帧标记标签条：时间轴上方，每个已命名帧一个标签，尖头居中指向所属帧
+    _drawLabels(ctx, project, w) {
+        ctx.font = '11px ui-monospace,Consolas,monospace';
+        ctx.textAlign = 'center';
+        const dragging = this._drag && this._drag.type === 'label' ? this._drag.at : -1;
+        for (const a of project.frameActions) {
+            const label = (a.label && a.label.trim()) || '';
+            if (!label) continue;
+            const x = this._frameToX(a.frame);
+            if (x < PAD_LEFT - 80 || x > w + 80) continue;
+            const tw = ctx.measureText(label).width;
+            const pad = 6, h = 14, top = 4;
+            const cw = tw + pad * 2;
+            const left = x - cw / 2;
+            const active = a.frame === dragging;
+            // 标签底 + 金色描边（拖动中的标签高亮为强调色）
+            ctx.fillStyle = 'rgba(22,27,36,0.96)';
+            this._roundRectPath(ctx, left, top, cw, h, 4);
+            ctx.fill();
+            ctx.strokeStyle = active ? '#4d9fff' : '#e8c66a';
+            ctx.lineWidth = active ? 1.5 : 1;
+            this._roundRectPath(ctx, left, top, cw, h, 4);
+            ctx.stroke();
+            // 标签名
+            ctx.fillStyle = active ? '#9cc6ff' : '#e8c66a';
+            ctx.fillText(label, x, top + h - 4);
+            // 尖头（居中向下，apex 指向所属帧的 x 位置）
+            ctx.fillStyle = active ? '#4d9fff' : '#e8c66a';
+            ctx.beginPath();
+            ctx.moveTo(x - 4, top + h);
+            ctx.lineTo(x + 4, top + h);
+            ctx.lineTo(x, top + h + 5);
+            ctx.closePath();
+            ctx.fill();
+        }
+        ctx.textAlign = 'start';
+    }
+
+    _roundRectPath(ctx, x, y, w, h, r) {
+        r = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
     }
 
     _drawActionLane(ctx, project, w) {
-        const y = RULER_H;
+        const y = LABEL_H + RULER_H;
         ctx.fillStyle = '#12161d';
         ctx.fillRect(0, y, w, ACT_H);
         ctx.fillStyle = '#6b7482';
@@ -407,10 +561,11 @@ export class TimelineView {
         for (const a of project.frameActions) {
             const x = this._frameToX(a.frame);
             if (x < PAD_LEFT || x > w) continue;
-            const hasJump = a.jumpTo >= 0, hasPlay = a.playTo >= 0;
+            const hasJump = a.jumpTo >= 0, hasPlay = a.playTo >= 0, hasStop = !!a.stop;
             if (hasJump) { ctx.fillStyle = '#ff9800'; ctx.fillRect(x - 3, y + 3, 6, ACT_H - 6); }
             if (hasPlay) { ctx.fillStyle = '#00bcd4'; ctx.beginPath(); ctx.arc(x, y + ACT_H / 2, 3, 0, 7); ctx.fill(); }
             if (hasJump && hasPlay) { ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, y + 3, 2, ACT_H - 6); }
+            if (hasStop) { ctx.fillStyle = '#ff5252'; ctx.fillRect(x - 3, y + ACT_H / 2 - 3, 6, 6); }
         }
     }
 
@@ -440,11 +595,19 @@ export class TimelineView {
             const x = this._frameToX(f);
             if (x < PAD_LEFT || x > w) continue;
             const state = f === draggingFrame ? 'selected' : (f === hoverFrame ? 'hover' : 'normal');
-            this._drawKeyframe(ctx, x, y + LANE_H / 2, state);
+            this._drawKeyframe(ctx, x, y + LANE_H / 2, state, false);
+        }
+        // 空关键帧（空心菱形，区别于有值的实心菱形）
+        for (const f of (s.emptyKeyframes || [])) {
+            if (frames.has(f)) continue;   // 同帧已有真实关键帧则不重复
+            const x = this._frameToX(f);
+            if (x < PAD_LEFT || x > w) continue;
+            const state = f === draggingFrame ? 'selected' : (f === hoverFrame ? 'hover' : 'normal');
+            this._drawKeyframe(ctx, x, y + LANE_H / 2, state, true);
         }
     }
 
-    _drawKeyframe(ctx, x, cy, state) {
+    _drawKeyframe(ctx, x, cy, state, empty = false) {
         const r = state === 'normal' ? 5 : 6;   // 悬停/选中略放大
         ctx.beginPath();
         ctx.moveTo(x, cy - r);
@@ -452,6 +615,13 @@ export class TimelineView {
         ctx.lineTo(x, cy + r);
         ctx.lineTo(x - r, cy);
         ctx.closePath();
+        if (empty) {
+            // 空关键帧：空心菱形（透明填充 + 强调色描边）
+            ctx.strokeStyle = state === 'selected' ? '#ffffff' : '#b388ff';
+            ctx.lineWidth = state === 'selected' ? 2 : 1.5;
+            ctx.stroke();
+            return;
+        }
         if (state === 'selected') {
             ctx.fillStyle = '#ffffff';
             ctx.fill();
@@ -504,9 +674,10 @@ export class TimelineView {
         if (kfs.length) {
             html += `<div class="tt-sub">关键帧（${kfs.length}）</div>`;
             for (const k of kfs) {
-                html += `<div class="tt-row">${k.section.name}.${k.prop} = ${Number(k.value).toFixed(2)}</div>`;
+                if (k.empty) html += `<div class="tt-row">${k.section.name} · 空关键帧</div>`;
+                else html += `<div class="tt-row">${k.section.name}.${k.prop} = ${Number(k.value).toFixed(2)}</div>`;
             }
-            html += `<div class="tt-hint">拖动移动 · 右键删除</div>`;
+            html += `<div class="tt-hint">拖动移动 · 右键删除 · 双击切换空关键帧</div>`;
         }
         this.tooltip.innerHTML = html;
         this.tooltip.style.display = 'block';
@@ -518,10 +689,28 @@ export class TimelineView {
         this.tooltip.style.top = top + 'px';
     }
 
-    // 命中检测：返回指针下关键帧（该分段该帧的任一属性关键帧），否则 null
+    // 命中检测：返回指针下标签所在帧，否则 null（几何与 _drawLabels 一致）
+    _labelHit(mx, my) {
+        if (my < 0 || my >= LABEL_H) return null;
+        const { project } = this.getState();
+        const w = this.canvas.clientWidth;
+        this.ctx.font = '11px ui-monospace,Consolas,monospace';
+        for (const a of project.frameActions) {
+            const label = (a.label && a.label.trim()) || '';
+            if (!label) continue;
+            const x = this._frameToX(a.frame);
+            if (x < PAD_LEFT - 80 || x > w + 80) continue;
+            const cw = this.ctx.measureText(label).width + 12;   // pad 6 * 2
+            const left = x - cw / 2, top = 4, h = 14;
+            if (mx >= left && mx <= left + cw && my >= top && my <= top + h + 5) return { frame: a.frame };
+        }
+        return null;
+    }
+
+    // 命中检测：返回指针下关键帧（该分段该帧的任一属性关键帧，或空关键帧标记），否则 null
     _keyframeHit(mx, my) {
         const { project } = this.getState();
-        const laneY0 = RULER_H + ACT_H;
+        const laneY0 = LABEL_H + RULER_H + ACT_H;
         for (let si = 0; si < project.sections.length; si++) {
             const y = laneY0 + si * LANE_H;
             if (my < y || my >= y + LANE_H) continue;
@@ -529,10 +718,26 @@ export class TimelineView {
             const s = project.sections[si];
             const frames = new Set();
             for (const p of NUM_PROPS) for (const k of keyframesOf(s, p)) frames.add(k.frame);
+            for (const f of (s.emptyKeyframes || [])) frames.add(f);
             for (const f of frames) {
                 const x = this._frameToX(f);
                 if (Math.abs(mx - x) <= 7) return { si, frame: f };
             }
+            return null;
+        }
+        return null;
+    }
+
+    // 命中检测：返回指针所在的（分段 lane, 帧号），用于双击把普通帧转化为空关键帧；否则 null
+    _laneHit(mx, my) {
+        const { project } = this.getState();
+        const laneY0 = LABEL_H + RULER_H + ACT_H;
+        for (let si = 0; si < project.sections.length; si++) {
+            const y = laneY0 + si * LANE_H;
+            if (my < y || my >= y + LANE_H) continue;
+            if (mx < PAD_LEFT) return null;
+            const f = Math.round(this._xToFrame(mx));
+            if (f >= 0) return { si, frame: f };
             return null;
         }
         return null;

@@ -1,7 +1,7 @@
 // 编辑器入口：全局状态 + 三区视图接线 + WASM 载入 + 布局面板 + 导入/导出/往返验证。
 import {
     defaultProject, defaultSection, computeFrame, endFrame, toEngineConfig, fromEngineConfig, setKeyframe,
-    moveKeyframe, removeKeyframesAt,
+    moveKeyframe, removeKeyframesAt, moveFrameLabel, toggleEmptyKeyframe,
 } from './model.js';
 import { PreviewRenderer } from './render.js';
 import { TimelineView } from './timeline.js';
@@ -30,7 +30,13 @@ const state = {
     selection: -1,
     layout: { rows: 1, spacing: 4, ledW: 14, ledH: 14 },
     framePixels: [],
+    playing: false,             // 时间轴播放状态（TimelineView 经 onPlayStateChange 同步）
+    hideUiWhenPlaying: true,    // 「播放时隐藏灯带上的 UI」复选框（预览区右上角，默认打开）
 };
+
+// 「播放时隐藏灯带 UI」偏好持久化（默认打开，仅在用户显式关闭后记 '0'）
+const HIDE_UI_KEY = 'beshell.ws2812b.hideUiWhenPlaying';
+try { state.hideUiWhenPlaying = localStorage.getItem(HIDE_UI_KEY) !== '0'; } catch (e) {}
 
 let preview, timeline, sidebar, quickPanel, wasm = null;
 let currentProjectId = null;   // 当前工程对应的已保存项目 id（null = 尚未保存到本地项目）
@@ -60,19 +66,23 @@ function refreshAll() {
 function buildLayoutPanel() {
     const host = document.querySelector('#layout-panel');
     host.innerHTML = `
-        <div class="lp-title">灯带布局</div>
+        <div class="lp-group">灯带</div>
         <label class="lp-field">行 <input id="lp-rows" type="number" value="1" disabled title="当前仅支持单行灯条"></label>
         <label class="lp-field">列 <input id="lp-cols" type="number" min="1" max="1024" step="1"></label>
         <label class="lp-field">间距 <input id="lp-spacing" type="number" min="0" step="1"></label>
-        <label class="lp-field">长 <input id="lp-ledw" type="number" min="2" step="1"></label>
-        <label class="lp-field">宽 <input id="lp-ledh" type="number" min="2" step="1"></label>
-        <label class="lp-field">封装
+        <label class="lp-field lp-loop"><input id="lp-loop" type="checkbox"> 回环 loop <span class="lp-note">首尾相接</span></label>
+        <label class="lp-field lp-pin">引脚 (ESP32 GPIO) <input id="lp-pin" type="number" min="0" max="64" step="1"></label>
+
+        <div class="lp-group">灯珠</div>
+        <div class="lp-led-row">
+            <label class="lp-field">长 <input id="lp-ledw" type="number" min="2" step="1"></label>
+            <label class="lp-field">宽 <input id="lp-ledh" type="number" min="2" step="1"></label>
+        </div>
+        <label class="lp-field lp-preset">封装
             <select id="lp-preset">
                 ${PRESETS.map((p, i) => `<option value="${i}">${p.name}</option>`).join('')}
             </select>
-        </label>
-        <label class="lp-field">引脚 <input id="lp-pin" type="number" min="0" max="64" step="1"></label>
-        <label class="lp-field"><input id="lp-loop" type="checkbox"> 回环 loop</label>`;
+        </label>`;
 
     const rows = host.querySelector('#lp-rows');
     const cols = host.querySelector('#lp-cols');
@@ -196,11 +206,14 @@ function exportJson() {
 }
 
 // 用引擎配置替换当前工程（导入 JSON 与项目管理载入共用）
-function applyProject(cfg, id = null, layout = null) {
+function applyProject(cfg, id = null, layout = null, strip = null) {
     state.project = fromEngineConfig(cfg);
     state.frame = 0;
     state.selection = state.project.sections.length > 0 ? 0 : -1;
     currentProjectId = id;
+    // strip 已移出 config：优先显式 strip 参数，其次旧 config.strip 兜底（兼容历史记录）
+    if (strip) Object.assign(state.project.strip, strip);
+    else if (cfg.strip) Object.assign(state.project.strip, cfg.strip);
     if (layout) Object.assign(state.layout, layout);
     syncLayoutPanel();
     refreshAll();
@@ -245,7 +258,7 @@ function openProjectManager() {
             row.className = 'proj-item';
             row.innerHTML = `
                 <div class="proj-info">
-                    <div class="proj-name">${escapeHtml(p.name)} <span class="proj-time">${new Date(p.updatedAt).toLocaleString()}</span></div>
+                    <div class="proj-name">${escapeHtml(p.name)} <span class="proj-size" title="行×列（灯珠）">${p.rows}×${p.cols}</span> <span class="proj-time">${new Date(p.updatedAt).toLocaleString()}</span></div>
                     <div class="proj-desc">${escapeHtml(p.description || '')}</div>
                 </div>
                 <div class="proj-actions">
@@ -255,7 +268,7 @@ function openProjectManager() {
             row.querySelector('[data-act="load"]').addEventListener('click', () => {
                 const rec = loadProject(p.id);
                 if (!rec) return;
-                applyProject(rec.config, p.id, rec.layout);
+                applyProject(rec.config, p.id, rec.layout, rec.strip);
                 close();
             });
             row.querySelector('[data-act="del"]').addEventListener('click', () => {
@@ -317,7 +330,7 @@ function openProjectSettings() {
     overlay.querySelector('#proj-save').addEventListener('click', () => {
         const name = nameEl.value.trim();
         if (!name) { hintEl.textContent = '请填写项目名称'; return; }
-        const id = saveProject(toEngineConfig(state.project), { ...state.layout }, {
+        const id = saveProject(toEngineConfig(state.project), { ...state.layout }, { ...state.project.strip }, {
             id: currentProjectId,
             name,
             description: descEl.value.trim(),
@@ -347,16 +360,16 @@ function newProject() {
     if (preview) preview.fit();
 }
 
-// 一键保存：当前有已保存项目时直接覆盖；否则打开项目管理弹窗命名
+// 一键保存：当前有已保存项目时直接覆盖；否则打开项目设置弹窗命名
 function quickSave() {
     const cfg = toEngineConfig(state.project);
     const btn = document.querySelector('#btn-quick-save');
-    if (currentProjectId && updateProjectConfig(currentProjectId, cfg, { ...state.layout })) {
+    if (currentProjectId && updateProjectConfig(currentProjectId, cfg, { ...state.layout }, { ...state.project.strip })) {
         const html = btn.innerHTML;
         btn.innerHTML = '<span style="color:#3ecf8e;font-weight:700">✓</span>';
         setTimeout(() => { btn.innerHTML = html; }, 1200);
     } else {
-        openProjectManager();
+        openProjectSettings();
     }
 }
 
@@ -392,7 +405,10 @@ function openCodeExport() {
                 <label class="ms-field">灯数 <input id="code-length" type="number" min="1" step="1"></label>
                 <label class="ms-field"><input id="code-loop" type="checkbox"> 回环 loop</label>
             </div>
-            <textarea id="code-output" class="modal-code" spellcheck="false" readonly></textarea>
+            <div class="modal-code-wrap">
+                <pre id="code-gutter" class="code-gutter" aria-hidden="true"></pre>
+                <textarea id="code-output" class="modal-code" spellcheck="false" readonly></textarea>
+            </div>
             <div class="modal-actions">
                 <button id="code-copy" class="primary" type="button">复制代码</button>
                 <button id="code-close" type="button">关闭</button>
@@ -404,6 +420,7 @@ function openCodeExport() {
     const length = overlay.querySelector('#code-length');
     const loop = overlay.querySelector('#code-loop');
     const out = overlay.querySelector('#code-output');
+    const gutter = overlay.querySelector('#code-gutter');
     const copyBtn = overlay.querySelector('#code-copy');
 
     const saved = loadExportSetup();
@@ -416,12 +433,20 @@ function openCodeExport() {
         const lenV = parseInt(length.value, 10);
         const loopV = loop.checked;
         saveExportSetup({ pin: pinV, loop: loopV });
-        out.value = generateCode(state.project, { pin: pinV, length: lenV, loop: loopV });
+        const code = generateCode(state.project, { pin: pinV, length: lenV, loop: loopV });
+        out.value = code;
+        // 行号（复制代码时只取 textarea 内容，不带行号）
+        const n = code.split('\n').length;
+        let nums = '';
+        for (let i = 1; i <= n; i++) nums += i + '\n';
+        gutter.textContent = nums;
+        gutter.scrollTop = out.scrollTop;
     };
 
     pin.addEventListener('input', regen);
     length.addEventListener('input', regen);
     loop.addEventListener('change', regen);
+    out.addEventListener('scroll', () => { gutter.scrollTop = out.scrollTop; });
 
     const onKey = (ev) => { if (ev.key === 'Escape') close(); };
     const close = () => {
@@ -462,15 +487,46 @@ function setWasmStatus(text, ok) {
     el.className = 'wasm-status ' + (ok ? 'ok' : 'err');
 }
 
+// 关键帧计数：新格式按帧聚合（Σ帧 Σ段 的 prop 条目数）；旧格式按属性数组求和；兼容旧平铺数组
+function countKeyframes(kfs) {
+    if (Array.isArray(kfs)) return kfs.length;
+    if (!kfs) return 0;
+    // 新格式：{ frame: { si: { prop } } }（值为对象）→ 统计所有 prop 条目
+    if (Object.values(kfs).every(v => v && typeof v === 'object' && !Array.isArray(v))) {
+        let n = 0;
+        for (const secMap of Object.values(kfs)) {
+            for (const propMap of Object.values(secMap || {})) n += Object.keys(propMap || {}).length;
+        }
+        return n;
+    }
+    // 旧格式：{ prop: [{...}] }
+    let n = 0;
+    for (const arr of Object.values(kfs)) n += (Array.isArray(arr) ? arr.length : 0);
+    return n;
+}
+
+// 归一化段数：sections 可省略（单段全默认），否则按 keyframes 最大分段 idx 推断
+function sectionCount(cfg) {
+    if (cfg.sections) return cfg.sections.length;
+    if (cfg.keyframes) {
+        let max = -1;
+        for (const secMap of Object.values(cfg.keyframes)) {
+            for (const si of Object.keys(secMap || {})) max = Math.max(max, Number(si));
+        }
+        return Math.max(1, max + 1);
+    }
+    return 0;
+}
+
 async function verifyEngine() {
     if (!wasm) { setWasmStatus('WASM 未就绪', false); return; }
     const cfg = toEngineConfig(state.project);
     try {
         const engineCfg = wasm.roundtrip(cfg);
         // 关键字段一致性对照
-        const a = cfg.keyframes.length, b = engineCfg.keyframes.length;
+        const a = countKeyframes(cfg.keyframes), b = countKeyframes(engineCfg.keyframes);
         const fa = cfg.frameActions.length, fb = engineCfg.frameActions.length;
-        const sa = cfg.sections.length, sb = engineCfg.sections.length;
+        const sa = sectionCount(cfg), sb = sectionCount(engineCfg);
         const ok = a === b && fa === fb && sa === sb;
         setWasmStatus(
             `往返: 分段 ${sb}/${sa} · 关键帧 ${b}/${a} · 帧动作 ${fb}/${fa} ${ok ? '✓ 一致' : '✗ 不一致'}`,
@@ -508,6 +564,7 @@ async function main() {
     });
     timeline = new TimelineView(document.querySelector('#timeline'), getState, {
         onScrub: setFrame,
+        onPlayStateChange: (playing) => { state.playing = playing; refresh(); },
         onFpsChange: (fps) => { state.project.fps = fps; refresh(); },
         onLengthChange: (frames) => { state.project.frames = frames; refresh(); },
         onMoveKeyframe: (si, from, to) => {
@@ -522,6 +579,17 @@ async function main() {
             removeKeyframesAt(sec, frame);
             refresh();
         },
+        onMoveLabel: (from, to) => {
+            if (!moveFrameLabel(state.project, from, to)) return false;
+            refresh();
+            return true;
+        },
+        onToggleEmptyKeyframe: (si, frame) => {
+            const sec = state.project.sections[si];
+            if (!sec) return;
+            toggleEmptyKeyframe(sec, frame);
+            refresh();
+        },
     });
     sidebar = new SidebarView(document.querySelector('#sidebar'), getState, {
         onAdd: addSection,
@@ -532,6 +600,15 @@ async function main() {
     });
     quickPanel = new QuickPanel(document.querySelector('#preview'), getState, {
         onChange: refresh,
+    });
+
+    // 预览区右上角「播放时隐藏灯带 UI」复选框
+    const chkHideUi = document.querySelector('#chk-hide-ui-playing');
+    chkHideUi.checked = state.hideUiWhenPlaying;
+    chkHideUi.addEventListener('change', () => {
+        state.hideUiWhenPlaying = chkHideUi.checked;
+        try { localStorage.setItem(HIDE_UI_KEY, chkHideUi.checked ? '1' : '0'); } catch (e) {}
+        preview.render();
     });
 
     // 初始示例：一个彩虹分段

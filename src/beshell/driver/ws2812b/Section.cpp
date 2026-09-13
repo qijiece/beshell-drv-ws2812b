@@ -18,30 +18,32 @@ namespace be::driver::ws2812b{
         Transition Section::* trans ;    // 非 null = 过渡内成员；null = 平铺成员
         double Transition::* tMember ;   // 过渡内 double 成员（trans 非 null 时使用）
         double Section::* flat ;         // 平铺 double 成员（trans 为 null 时使用）
+        double def ;                     // 引擎默认值（导出时等于该值即省略）
+        bool derived ;                   // true = 派生别名（前/后阴影起点，绘制时重算，导出始终省略）
     } NumPropDef ;
     static const NumPropDef numProps[] = {
-        {"x",           nullptr, nullptr,              &Section::x},
-        {"len",         nullptr, nullptr,              &Section::len},
-        {"shadowFront", nullptr, nullptr,              &Section::shadowFront},
-        {"shadowBack",  nullptr, nullptr,              &Section::shadowBack},
-        {"h0",          &Section::body,  &Transition::h0,  nullptr},
-        {"s0",          &Section::body,  &Transition::s0,  nullptr},
-        {"v0",          &Section::body,  &Transition::v0,  nullptr},
-        {"h1",          &Section::body,  &Transition::h1,  nullptr},
-        {"s1",          &Section::body,  &Transition::s1,  nullptr},
-        {"v1",          &Section::body,  &Transition::v1,  nullptr},
-        {"frontH0",     &Section::front, &Transition::h0,  nullptr},
-        {"frontS0",     &Section::front, &Transition::s0,  nullptr},
-        {"frontV0",     &Section::front, &Transition::v0,  nullptr},
-        {"frontH1",     &Section::front, &Transition::h1,  nullptr},
-        {"frontS1",     &Section::front, &Transition::s1,  nullptr},
-        {"frontV1",     &Section::front, &Transition::v1,  nullptr},
-        {"backH0",      &Section::back,  &Transition::h0,  nullptr},
-        {"backS0",      &Section::back,  &Transition::s0,  nullptr},
-        {"backV0",      &Section::back,  &Transition::v0,  nullptr},
-        {"backH1",      &Section::back,  &Transition::h1,  nullptr},
-        {"backS1",      &Section::back,  &Transition::s1,  nullptr},
-        {"backV1",      &Section::back,  &Transition::v1,  nullptr},
+        {"x",           nullptr, nullptr,              &Section::x,           0,   false},
+        {"len",         nullptr, nullptr,              &Section::len,         1,   false},
+        {"shadowFront", nullptr, nullptr,              &Section::shadowFront, 0,   false},
+        {"shadowBack",  nullptr, nullptr,              &Section::shadowBack,  0,   false},
+        {"h0",          &Section::body,  &Transition::h0,  nullptr,  0,   false},
+        {"s0",          &Section::body,  &Transition::s0,  nullptr,  100, false},
+        {"v0",          &Section::body,  &Transition::v0,  nullptr,  100, false},
+        {"h1",          &Section::body,  &Transition::h1,  nullptr,  0,   false},
+        {"s1",          &Section::body,  &Transition::s1,  nullptr,  100, false},
+        {"v1",          &Section::body,  &Transition::v1,  nullptr,  100, false},
+        {"frontH0",     &Section::front, &Transition::h0,  nullptr,  0,   true},
+        {"frontS0",     &Section::front, &Transition::s0,  nullptr,  100, true},
+        {"frontV0",     &Section::front, &Transition::v0,  nullptr,  100, true},
+        {"frontH1",     &Section::front, &Transition::h1,  nullptr,  0,   false},
+        {"frontS1",     &Section::front, &Transition::s1,  nullptr,  100, false},
+        {"frontV1",     &Section::front, &Transition::v1,  nullptr,  0,   false},
+        {"backH0",      &Section::back,  &Transition::h0,  nullptr,  0,   true},
+        {"backS0",      &Section::back,  &Transition::s0,  nullptr,  100, true},
+        {"backV0",      &Section::back,  &Transition::v0,  nullptr,  100, true},
+        {"backH1",      &Section::back,  &Transition::h1,  nullptr,  0,   false},
+        {"backS1",      &Section::back,  &Transition::s1,  nullptr,  100, false},
+        {"backV1",      &Section::back,  &Transition::v1,  nullptr,  0,   false},
     } ;
     #define NUM_PROP_COUNT (sizeof(numProps)/sizeof(numProps[0]))
 
@@ -282,6 +284,35 @@ namespace be::driver::ws2812b{
             }
         }
         return nullptr ;
+    }
+
+    // 可动画、非派生属性的个数（关键帧分组键集合大小）
+    size_t Section::propCount() {
+        size_t n = 0 ;
+        for(size_t i=0; i<NUM_PROP_COUNT; i++) {
+            if(!numProps[i].derived) n++ ;
+        }
+        return n ;
+    }
+
+    // 第 idx 个可动画、非派生属性的全名（idx < propCount()）
+    const char * Section::propNameAt(size_t idx) {
+        for(size_t i=0; i<NUM_PROP_COUNT; i++) {
+            if(numProps[i].derived) continue ;
+            if(idx==0) return numProps[i].name ;
+            idx-- ;
+        }
+        return nullptr ;
+    }
+
+    // 属性名的引擎默认值（未知属性返回 0）
+    double Section::propDefault(const char * name) {
+        for(size_t i=0; i<NUM_PROP_COUNT; i++) {
+            if(strcmp(numProps[i].name, name)==0) {
+                return numProps[i].def ;
+            }
+        }
+        return 0 ;
     }
 
     /**
@@ -557,6 +588,11 @@ namespace be::driver::ws2812b{
         }
         int xi = (int)(x + 0.5) ;
 
+        // 主体终点：长度仅 1 颗灯珠时折叠到起点（无渐变空间），后阴影据此作为起点
+        double bodyH1 = (n>1) ? body.h1 : body.h0 ;
+        double bodyS1 = (n>1) ? body.s1 : body.s0 ;
+        double bodyV1 = (n>1) ? body.v1 : body.v0 ;
+
         // 主体过渡：起点 → 终点（len==1 时退化为点，只用起点色）
         drawTransition(strip, xi, n, +1, 0, n>1 ? (double)(n-1) : 0, body) ;
 
@@ -567,11 +603,11 @@ namespace be::driver::ws2812b{
             drawTransition(strip, xi-1, (int)(shadowFront+0.5), -1, 1, shadowFront, ft) ;
         }
 
-        // 后阴影过渡：起点向后（索引增大），起点色 = 主体终点色
-        //（无主体过渡时终点==起点，等同从起点属性值过渡）
+        // 后阴影过渡：起点向后（索引增大），起点色 = 主体有效终点色
+        //（无主体过渡时终点==起点，等同从起点属性值过渡；长度仅 1 颗时终点折叠到起点）
         if(shadowBack>0) {
             Transition bt = back ;
-            bt.h0 = body.h1 ; bt.s0 = body.s1 ; bt.v0 = body.v1 ;
+            bt.h0 = bodyH1 ; bt.s0 = bodyS1 ; bt.v0 = bodyV1 ;
             drawTransition(strip, xi+n, (int)(shadowBack+0.5), +1, 1, shadowBack, bt) ;
         }
     }
@@ -918,19 +954,30 @@ namespace be::driver::ws2812b{
         }
     }
 
-    JSValue Section::exportConfig() {
+    JSValue Section::exportConfig(bool includeNumProps) {
         JSValue obj = JS_NewObject(ctx) ;
-        for(size_t i=0; i<NUM_PROP_COUNT; i++) {
-            JS_SetPropertyStr(ctx, obj, numProps[i].name, JS_NewFloat64(ctx, *numPropAddr(this, numProps[i]))) ;
+        if(includeNumProps) {
+            for(size_t i=0; i<NUM_PROP_COUNT; i++) {
+                if(numProps[i].derived) continue ;               // 派生别名（前/后阴影起点）不导出
+                double v = *numPropAddr(this, numProps[i]) ;
+                if(v == numProps[i].def) continue ;              // 默认值不导出
+                JS_SetPropertyStr(ctx, obj, numProps[i].name, JS_NewFloat64(ctx, v)) ;
+            }
         }
         for(size_t i=0; i<EASE_PROP_COUNT; i++) {
-            JS_SetPropertyStr(ctx, obj, easeProps[i].name, JS_NewString(ctx, easeName(easeMember(this, easeProps[i])))) ;
+            tween::TweenEaseType e = easeMember(this, easeProps[i]) ;
+            if(e == tween::TWEEN_LINEAR) continue ;          // 默认线性缓动不导出
+            JS_SetPropertyStr(ctx, obj, easeProps[i].name, JS_NewString(ctx, easeName(e))) ;
         }
         for(size_t i=0; i<BOOL_PROP_COUNT; i++) {
-            JS_SetPropertyStr(ctx, obj, boolProps[i].name, JS_NewBool(ctx, boolMember(this, boolProps[i]))) ;
+            bool b = boolMember(this, boolProps[i]) ;
+            if(!b) continue ;                                // 默认 false 不导出
+            JS_SetPropertyStr(ctx, obj, boolProps[i].name, JS_NewBool(ctx, b)) ;
         }
         for(size_t i=0; i<S_PROP_COUNT; i++) {
-            JS_SetPropertyStr(ctx, obj, sProps[i].name, JS_NewFloat64(ctx, sMember(this, sProps[i]))) ;
+            double s = sMember(this, sProps[i]) ;
+            if(s == 1.70158) continue ;                      // 默认 S 参数不导出
+            JS_SetPropertyStr(ctx, obj, sProps[i].name, JS_NewFloat64(ctx, s)) ;
         }
         return obj ;
     }

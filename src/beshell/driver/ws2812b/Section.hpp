@@ -63,12 +63,18 @@ namespace be::driver::ws2812b{
 
         // 配置导入/导出（C++ 侧，JS 同名方法转调）
         void applyConfig(JSValueConst cfg) ;
-        JSValue exportConfig() ;
+        // includeNumProps=false 时仅导出静态过渡配置（数值基准值由 Rainbow 写入 keyframes["0"]）
+        JSValue exportConfig(bool includeNumProps = true) ;
 
         // 属性名 -> 可动画成员的 double 地址（非可动画属性返回 nullptr）
         static double * propMember(Section * sec, const char * name) ;
         // 成员地址 -> 属性名（供 Rainbow 导出关键帧时反查）
         static const char * propName(Section * sec, const double * cptr) ;
+        // 可动画、非派生属性枚举（关键帧分组键遍历用）
+        static size_t propCount() ;
+        static const char * propNameAt(size_t idx) ;
+        // 属性名的引擎默认值（供 Rainbow 导出帧 0 基准值时省略默认）
+        static double propDefault(const char * name) ;
 
         // 关键帧写入（frame 已由 Rainbow 换算）；出错返回 -1 且已抛出异常
         int setOne(uint32_t frame, const char * prop, JSValueConst jsValue, JSValueConst jsEase, JSValueConst jsParams) ;

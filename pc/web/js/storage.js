@@ -1,6 +1,6 @@
 // 本地项目管理：localStorage 持久化。
-// 每条记录 = 元数据（名称/说明/更新时间）+ 完整引擎配置（toEngineConfig 输出，
-// 已含 pin 等驱动设置 strip.{pin,length,loop} 与 fps/repeat/repeatCount/分段/关键帧/帧动作等动画设置）。
+// 每条记录 = 元数据（名称/说明/更新时间）+ 动画引擎配置（toEngineConfig 输出）+ 灯带设置 strip
+// （strip 已移出 config，单独持久化：strip.{pin,length,loop}）。
 const KEY = 'beshell.ws2812b.projects';
 
 function readAll() {
@@ -11,13 +11,17 @@ function writeAll(list) {
     localStorage.setItem(KEY, JSON.stringify(list));
 }
 
-// 列表元数据（不含 config，供列表 UI 轻量展示）
+// 列表元数据（不含 config，供列表 UI 轻量展示；附带行×列尺寸，行=layout.rows、列=strip.length）
 export function listProjects() {
-    return readAll().map(r => ({ id: r.id, name: r.name, description: r.description, updatedAt: r.updatedAt }));
+    return readAll().map(r => ({
+        id: r.id, name: r.name, description: r.description, updatedAt: r.updatedAt,
+        rows: (r.layout && r.layout.rows) || 1,
+        cols: (r.strip && r.strip.length) || (r.config && r.config.strip && r.config.strip.length) || 0,
+    }));
 }
 
 // 保存：id 存在则覆盖更新，否则新建；返回项目 id
-export function saveProject(config, layout, { id, name, description }) {
+export function saveProject(config, layout, strip, { id, name, description }) {
     const list = readAll();
     const now = Date.now();
     if (id) {
@@ -27,21 +31,22 @@ export function saveProject(config, layout, { id, name, description }) {
             rec.description = description;
             rec.config = config;
             rec.layout = layout;
+            rec.strip = strip;
             rec.updatedAt = now;
             writeAll(list);
             return id;
         }
     }
     const nid = 'p' + Math.random().toString(36).slice(2, 10);
-    list.push({ id: nid, name, description, config, layout, updatedAt: now, createdAt: now });
+    list.push({ id: nid, name, description, config, layout, strip, updatedAt: now, createdAt: now });
     writeAll(list);
     return nid;
 }
 
-// 载入：返回该项目的完整引擎配置，不存在返回 null
+// 载入：返回该项目的引擎配置 + 灯带设置，不存在返回 null
 export function loadProject(id) {
     const rec = readAll().find(r => r.id === id);
-    return rec ? { config: rec.config, layout: rec.layout } : null;
+    return rec ? { config: rec.config, layout: rec.layout, strip: rec.strip } : null;
 }
 
 export function deleteProject(id) {
@@ -49,12 +54,13 @@ export function deleteProject(id) {
 }
 
 // 仅更新配置与灯带设置（保留名称/说明），供一键保存覆盖；返回是否命中
-export function updateProjectConfig(id, config, layout) {
+export function updateProjectConfig(id, config, layout, strip) {
     const list = readAll();
     const rec = list.find(r => r.id === id);
     if (!rec) return false;
     rec.config = config;
     rec.layout = layout;
+    rec.strip = strip;
     rec.updatedAt = Date.now();
     writeAll(list);
     return true;

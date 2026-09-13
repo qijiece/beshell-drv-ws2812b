@@ -1,5 +1,7 @@
 #include "Rainbow.hpp"
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 
 extern "C" {
 #include <beshell/deps/quickjs/quickjs-libc.h>
@@ -30,8 +32,8 @@ namespace be::driver::ws2812b{
      *
      * 纯静态绘制不需要时间线，addSection 后 draw() 即可。
      *
-     * 支持 exportConfig()/importConfig() 整体导出/导入配置（含 strip 驱动层
-     * 配置、全部分段与关键帧），供编辑器等工具使用。
+     * 支持 exportConfig()/importConfig() 整体导出/导入动画配置（全部分段与
+     * 关键帧；不含 strip 驱动层配置，后者由 strip.setup() 单独维护），供编辑器等工具使用。
      *
      * 动画示例：
      * ```javascript
@@ -507,15 +509,16 @@ namespace be::driver::ws2812b{
     /**
      * 导出配置
      *
-     * 返回可 JSON 序列化的完整配置（供编辑器等工具使用）：
+     * 返回可 JSON 序列化的完整动画配置（供编辑器等工具使用）：
      * ```javascript
      * {
      *   fps, frames, repeat, repeatCount,
-     *   strip: { pin, length, loop },
-     *   sections: [ ... ],
-     *   keyframes: [ { time, section, prop, value, ease, easeS }, ... ]   // time 为毫秒
+     *   sections: [ ... ],                                   // 仅静态过渡配置（可省略：单段且全默认）
+     *   keyframes: { [frame]: { [si]: { [prop]: 值|三元组 } } },   // 帧 0 = 各分段基准值，非 0 帧 = 间补目标值
+     *   frameActions: [ ... ]
      * }
      * ```
+     * 注：不含 strip 驱动层配置（pin/length/loop 由 strip.setup() 单独维护）。
      *
      * @component beshell-drv-ws2812b
      *
@@ -528,62 +531,126 @@ namespace be::driver::ws2812b{
         THIS_NCLASS(Rainbow, that)
 
         JSValue obj = JS_NewObject(ctx) ;
-        JS_SetPropertyStr(ctx, obj, "fps", JS_NewFloat64(ctx, that->tlFps)) ;
-        JS_SetPropertyStr(ctx, obj, "frames", JS_NewFloat64(ctx, (double)that->tlFrames)) ;
-        JS_SetPropertyStr(ctx, obj, "repeat", JS_NewBool(ctx, that->tlRepeat)) ;
-        JS_SetPropertyStr(ctx, obj, "repeatCount", JS_NewInt64(ctx, that->tlRepeatCount)) ;
+        if(that->tlFps != 60) JS_SetPropertyStr(ctx, obj, "fps", JS_NewFloat64(ctx, that->tlFps)) ;
+        if(that->tlFrames != 0) JS_SetPropertyStr(ctx, obj, "frames", JS_NewFloat64(ctx, (double)that->tlFrames)) ;
+        if(that->tlRepeat) JS_SetPropertyStr(ctx, obj, "repeat", JS_NewBool(ctx, that->tlRepeat)) ;
+        if(that->tlRepeatCount != -1) JS_SetPropertyStr(ctx, obj, "repeatCount", JS_NewInt64(ctx, that->tlRepeatCount)) ;
 
-        // strip 驱动层配置
-        Strip * strip = (Strip*) NativeClass::fromJS(that->stripObj) ;
-        if(strip) {
-            JS_SetPropertyStr(ctx, obj, "strip", strip->exportConfig()) ;
-        }
+        size_t nsec = that->sections.size() ;
 
-        // 分段
+        // 取（或建）子对象并返回一个新引用（调用方负责 JS_FreeValue）
+        auto childObj = [&](JSValue parent, const char * key) -> JSValue {
+            JSValue o = JS_GetPropertyStr(ctx, parent, key) ;
+            if(JS_IsObject(o)) {
+                return o ;
+            }
+            JS_FreeValue(ctx, o) ;
+            o = JS_NewObject(ctx) ;
+            JS_SetPropertyStr(ctx, parent, key, o) ;   // 转移所有权给 parent
+            return JS_DupValue(ctx, o) ;
+        } ;
+
+        // 分段：仅静态过渡配置（数值基准值已移入 keyframes["0"]）
         JSValue arrSecs = JS_NewArray(ctx) ;
-        for(size_t i=0; i<that->sections.size(); i++) {
+        size_t staticNonDefault = 0 ;
+        for(size_t i=0; i<nsec; i++) {
             Section * sec = (Section*) NativeClass::fromJS(that->sections[i]) ;
-            if(sec) {
-                JS_SetPropertyUint32(ctx, arrSecs, i, sec->exportConfig()) ;
+            if(!sec) continue ;
+            JSValue cfg = sec->exportConfig(false) ;
+            JS_SetPropertyUint32(ctx, arrSecs, i, cfg) ;
+            JSPropertyEnum * ptab = nullptr ;
+            uint32_t plen = 0 ;
+            if(JS_GetOwnPropertyNames(ctx, &ptab, &plen, cfg, JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY)==0) {
+                if(plen>0) staticNonDefault++ ;
+                for(uint32_t j=0; j<plen; j++) JS_FreeAtom(ctx, ptab[j].atom) ;
+                js_free(ctx, ptab) ;
             }
         }
-        JS_SetPropertyStr(ctx, obj, "sections", arrSecs) ;
+        // sections 省略规则：仅当「只有 1 段且静态配置全默认」时省略；0 段/多段始终写
+        if(nsec==1 && staticNonDefault==0) {
+            JS_FreeValue(ctx, arrSecs) ;
+        } else {
+            JS_SetPropertyStr(ctx, obj, "sections", arrSecs) ;
+        }
 
-        // 关键帧（时间线未创建时为空数组；仅 C_DOUBLE 轨道，且 cptr 可反查到分段成员）
-        JSValue arrKfs = JS_NewArray(ctx) ;
-        uint32_t ki = 0 ;
+        // 关键帧：按帧号聚合 { [frame]: { [si]: { [prop]: 值|三元组 } } }
+        JSValue objKfs = JS_NewObject(ctx) ;
+
+        // 帧 0：各分段非默认基准值（单值；对照 propDefault 省略默认）
+        for(size_t si=0; si<nsec; si++) {
+            Section * sec = (Section*) NativeClass::fromJS(that->sections[si]) ;
+            if(!sec) continue ;
+            JSValue s0 = JS_UNDEFINED ;
+            for(size_t pi=0; pi<Section::propCount(); pi++) {
+                const char * pname = Section::propNameAt(pi) ;
+                double * member = Section::propMember(sec, pname) ;
+                if(!member) continue ;
+                double v = *member ;
+                if(v == Section::propDefault(pname)) continue ;
+                if(JS_IsUndefined(s0)) {
+                    char skey[24] ;
+                    snprintf(skey, sizeof(skey), "%zu", si) ;
+                    JSValue f0 = childObj(objKfs, "0") ;
+                    s0 = childObj(f0, skey) ;
+                    JS_FreeValue(ctx, f0) ;
+                }
+                JS_SetPropertyStr(ctx, s0, pname, JS_NewFloat64(ctx, v)) ;
+            }
+            if(!JS_IsUndefined(s0)) JS_FreeValue(ctx, s0) ;
+        }
+
+        // 帧 > 0：遍历时间线轨道关键帧（跳过帧 0 基准）
         if(that->timeline) {
             for(auto track : that->timeline->allTracks()) {
-                if(track->type!=be::animator::Track::C_DOUBLE || !track->cptr) {
-                    continue ;
-                }
-                for(size_t si=0; si<that->sections.size(); si++) {
+                if(track->type!=be::animator::Track::C_DOUBLE || !track->cptr) continue ;
+                for(size_t si=0; si<nsec; si++) {
                     Section * sec = (Section*) NativeClass::fromJS(that->sections[si]) ;
-                    if(!sec) {
-                        continue ;
-                    }
+                    if(!sec) continue ;
                     const char * pname = Section::propName(sec, (const double*)track->cptr) ;
-                    if(!pname) {
-                        continue ;
-                    }
+                    if(!pname) continue ;
                     for(auto & kf : track->keyframes) {
-                        JSValue jkf = JS_NewObject(ctx) ;
-                        // 帧号 → 毫秒（对外接口一律时间制）
-                        JS_SetPropertyStr(ctx, jkf, "time", JS_NewFloat64(ctx, kf.frame*1000.0/that->tlFps)) ;
-                        JS_SetPropertyStr(ctx, jkf, "section", JS_NewUint32(ctx, (uint32_t)si)) ;
-                        JS_SetPropertyStr(ctx, jkf, "prop", JS_NewString(ctx, pname)) ;
-                        JS_SetPropertyStr(ctx, jkf, "value", JS_NewFloat64(ctx, kf.value)) ;
-                        JS_SetPropertyStr(ctx, jkf, "ease", JS_NewString(ctx, easeName(kf.ease))) ;
-                        JS_SetPropertyStr(ctx, jkf, "easeS", JS_NewFloat64(ctx, kf.easeS)) ;
-                        JS_SetPropertyUint32(ctx, arrKfs, ki++, jkf) ;
+                        if(kf.frame==0) continue ;
+                        char fkey[24] ;
+                        snprintf(fkey, sizeof(fkey), "%u", (unsigned)kf.frame) ;
+                        char skey[24] ;
+                        snprintf(skey, sizeof(skey), "%zu", si) ;
+                        JSValue fobj = childObj(objKfs, fkey) ;
+                        JSValue s0 = childObj(fobj, skey) ;
+                        JSValue jv ;
+                        if(kf.ease==tween::TWEEN_LINEAR && kf.easeS==1.70158) {
+                            jv = JS_NewFloat64(ctx, kf.value) ;
+                        } else if(kf.easeS==1.70158) {
+                            jv = JS_NewArray(ctx) ;
+                            JS_SetPropertyUint32(ctx, jv, 0, JS_NewFloat64(ctx, kf.value)) ;
+                            JS_SetPropertyUint32(ctx, jv, 1, JS_NewString(ctx, easeName(kf.ease))) ;
+                        } else {
+                            jv = JS_NewArray(ctx) ;
+                            JS_SetPropertyUint32(ctx, jv, 0, JS_NewFloat64(ctx, kf.value)) ;
+                            JS_SetPropertyUint32(ctx, jv, 1, JS_NewString(ctx, easeName(kf.ease))) ;
+                            JS_SetPropertyUint32(ctx, jv, 2, JS_NewFloat64(ctx, kf.easeS)) ;
+                        }
+                        JS_SetPropertyStr(ctx, s0, pname, jv) ;   // 转移 jv 所有权
+                        JS_FreeValue(ctx, s0) ;
+                        JS_FreeValue(ctx, fobj) ;
                     }
                     break ;
                 }
             }
         }
-        JS_SetPropertyStr(ctx, obj, "keyframes", arrKfs) ;
 
-        // 帧动作（jumpTo/playTo）：帧号制；次数取初始值（play() 复位语义往返一致）
+        // keyframes 空对象时省略
+        JSPropertyEnum * kptab = nullptr ;
+        uint32_t kplen = 0 ;
+        bool kfsEmpty = true ;
+        if(JS_GetOwnPropertyNames(ctx, &kptab, &kplen, objKfs, JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY)==0) {
+            kfsEmpty = (kplen==0) ;
+            for(uint32_t j=0; j<kplen; j++) JS_FreeAtom(ctx, kptab[j].atom) ;
+            js_free(ctx, kptab) ;
+        }
+        if(kfsEmpty) JS_FreeValue(ctx, objKfs) ;
+        else JS_SetPropertyStr(ctx, obj, "keyframes", objKfs) ;
+
+        // 帧动作（jumpTo/playTo/stop）：帧号制；次数取初始值（play() 复位语义往返一致）
         JSValue arrActs = JS_NewArray(ctx) ;
         uint32_t ai = 0 ;
         if(that->timeline) {
@@ -595,6 +662,9 @@ namespace be::driver::ws2812b{
                 JS_SetPropertyStr(ctx, jact, "jumpCount", JS_NewInt32(ctx, act.jumpCountInit)) ;
                 JS_SetPropertyStr(ctx, jact, "playTo", JS_NewInt64(ctx, act.playTo)) ;
                 JS_SetPropertyStr(ctx, jact, "playCount", JS_NewInt32(ctx, act.playCountInit)) ;
+                if(act.stop) JS_SetPropertyStr(ctx, jact, "stop", JS_NewBool(ctx, true)) ;
+                if(act.resume) JS_SetPropertyStr(ctx, jact, "resume", JS_NewBool(ctx, true)) ;
+                if(!act.label.empty()) JS_SetPropertyStr(ctx, jact, "label", JS_NewString(ctx, act.label.c_str())) ;
                 JS_SetPropertyUint32(ctx, arrActs, ai++, jact) ;
             }
         }
@@ -603,20 +673,35 @@ namespace be::driver::ws2812b{
         return obj ;
     }
 
-    // 从配置对象恢复一个关键帧（导入用，字段无效时静默跳过）
-    void Rainbow::restoreKeyframe(JSValueConst jkf) {
-        JSValue jv ;
+    // 从配置对象恢复某帧的「分段映射」{ si: { prop: 值|三元组 } }（导入用，字段无效时静默跳过）
+    void Rainbow::restoreFramePropsMap(uint32_t frame, JSValueConst secMap) {
+        JSPropertyEnum * ptab = nullptr ;
+        uint32_t plen = 0 ;
+        if(JS_GetOwnPropertyNames(ctx, &ptab, &plen, secMap, JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY)!=0) {
+            return ;
+        }
+        for(uint32_t i=0; i<plen; i++) {
+            const char * key = JS_AtomToCString(ctx, ptab[i].atom) ;
+            if(!key) {
+                JS_FreeAtom(ctx, ptab[i].atom) ;
+                continue ;
+            }
+            uint32_t si = (uint32_t)strtoul(key, nullptr, 10) ;
+            if(si<sections.size()) {
+                JSValue propMap = JS_GetProperty(ctx, secMap, ptab[i].atom) ;
+                if(JS_IsObject(propMap)) {
+                    restoreFrameProps(frame, si, propMap) ;
+                }
+                JS_FreeValue(ctx, propMap) ;
+            }
+            JS_FreeCString(ctx, key) ;
+            JS_FreeAtom(ctx, ptab[i].atom) ;
+        }
+        js_free(ctx, ptab) ;
+    }
 
-        jv = JS_GetPropertyStr(ctx, jkf, "time") ;     // 毫秒 → 帧号
-        double ms = 0 ;
-        JS_ToFloat64(ctx, &ms, jv) ;
-        JS_FreeValue(ctx, jv) ;
-        uint32_t frame = timeToFrame(ms) ;
-
-        jv = JS_GetPropertyStr(ctx, jkf, "section") ;
-        uint32_t si = 0 ;
-        JS_ToUint32(ctx, &si, jv) ;
-        JS_FreeValue(ctx, jv) ;
+    // 从配置对象恢复某帧某分段的属性表 { prop: 值|三元组 }（导入用，字段无效时静默跳过）
+    void Rainbow::restoreFrameProps(uint32_t frame, uint32_t si, JSValueConst propMap) {
         if(si>=sections.size()) {
             return ;
         }
@@ -625,44 +710,63 @@ namespace be::driver::ws2812b{
             return ;
         }
 
-        jv = JS_GetPropertyStr(ctx, jkf, "prop") ;
-        if(!JS_IsString(jv)) {
-            JS_FreeValue(ctx, jv) ;
+        JSPropertyEnum * ptab = nullptr ;
+        uint32_t plen = 0 ;
+        if(JS_GetOwnPropertyNames(ctx, &ptab, &plen, propMap, JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY)!=0) {
             return ;
         }
-        const char * prop = JS_ToCString(ctx, jv) ;
-        JS_FreeValue(ctx, jv) ;
-        double * member = Section::propMember(sec, prop) ;
-        JS_FreeCString(ctx, prop) ;
-        if(!member) {
-            return ;
-        }
-
-        jv = JS_GetPropertyStr(ctx, jkf, "value") ;
-        double value = 0 ;
-        JS_ToFloat64(ctx, &value, jv) ;
-        JS_FreeValue(ctx, jv) ;
-
-        tween::TweenEaseType ease = tween::TWEEN_LINEAR ;
-        jv = JS_GetPropertyStr(ctx, jkf, "ease") ;
-        if(JS_IsString(jv)) {
-            const char * cstr = JS_ToCString(ctx, jv) ;
-            tween::TweenEaseType e = tween::map_name_to_id(cstr) ;
-            JS_FreeCString(ctx, cstr) ;
-            if(e!=tween::TWEEN_EASE_UNKNOWN) {
-                ease = e ;
+        for(uint32_t i=0; i<plen; i++) {
+            const char * pname = JS_AtomToCString(ctx, ptab[i].atom) ;
+            if(!pname) {
+                JS_FreeAtom(ctx, ptab[i].atom) ;
+                continue ;
             }
-        }
-        JS_FreeValue(ctx, jv) ;
+            double * member = Section::propMember(sec, pname) ;
+            if(!member) {
+                JS_FreeCString(ctx, pname) ;
+                JS_FreeAtom(ctx, ptab[i].atom) ;
+                continue ;
+            }
 
-        double easeS = 1.70158 ;
-        jv = JS_GetPropertyStr(ctx, jkf, "easeS") ;
-        if(JS_IsNumber(jv)) {
-            JS_ToFloat64(ctx, &easeS, jv) ;
-        }
-        JS_FreeValue(ctx, jv) ;
+            JSValue jv = JS_GetProperty(ctx, propMap, ptab[i].atom) ;
+            double value = 0 ;
+            tween::TweenEaseType ease = tween::TWEEN_LINEAR ;
+            double easeS = 1.70158 ;
+            if(JS_IsArray(ctx, jv)) {
+                // 三元组 [value, easeName?, easeS?]
+                JSValue e0 = JS_GetPropertyUint32(ctx, jv, 0) ;
+                JS_ToFloat64(ctx, &value, e0) ;
+                JS_FreeValue(ctx, e0) ;
+                JSValue e1 = JS_GetPropertyUint32(ctx, jv, 1) ;
+                if(JS_IsString(e1)) {
+                    const char * cstr = JS_ToCString(ctx, e1) ;
+                    tween::TweenEaseType e = tween::map_name_to_id(cstr) ;
+                    JS_FreeCString(ctx, cstr) ;
+                    if(e!=tween::TWEEN_EASE_UNKNOWN) {
+                        ease = e ;
+                    }
+                }
+                JS_FreeValue(ctx, e1) ;
+                JSValue e2 = JS_GetPropertyUint32(ctx, jv, 2) ;
+                if(JS_IsNumber(e2)) {
+                    JS_ToFloat64(ctx, &easeS, e2) ;
+                }
+                JS_FreeValue(ctx, e2) ;
+            } else if(JS_IsNumber(jv)) {
+                JS_ToFloat64(ctx, &value, jv) ;
+            }
+            JS_FreeValue(ctx, jv) ;
 
-        timeline->set(frame, member, value, ease, easeS, sec->jsobj) ;
+            if(frame==0) {
+                *member = value ;   // 帧 0：基准值直落成员（无间补语义，ensureOrigin 据此捕获）
+            } else {
+                timeline->set(frame, member, value, ease, easeS, sec->jsobj) ;
+            }
+
+            JS_FreeCString(ctx, pname) ;
+            JS_FreeAtom(ctx, ptab[i].atom) ;
+        }
+        js_free(ctx, ptab) ;
     }
 
     // 从配置对象恢复一个帧动作（导入用，字段无效时静默跳过）
@@ -671,6 +775,9 @@ namespace be::driver::ws2812b{
         uint32_t frame = 0 ;
         int64_t jumpTo = -1, playTo = -1 ;
         int32_t jumpCount = 1, playCount = 1 ;
+        bool stop = false ;
+        bool resume = false ;
+        std::string label ;
         uint8_t mask = 0 ;
 
         jv = JS_GetPropertyStr(ctx, jact, "frame") ;
@@ -705,17 +812,79 @@ namespace be::driver::ws2812b{
         }
         JS_FreeValue(ctx, jv) ;
 
-        if(mask) {
-            timeline->setFrameAction(frame, mask, jumpTo, jumpCount, playTo, playCount) ;
+        jv = JS_GetPropertyStr(ctx, jact, "stop") ;
+        if(JS_IsBool(jv) && JS_ToBool(ctx, jv)) {
+            stop = true ;
+            mask |= Timeline::ACTION_STOP ;
         }
+        JS_FreeValue(ctx, jv) ;
+
+        jv = JS_GetPropertyStr(ctx, jact, "resume") ;
+        if(JS_IsBool(jv) && JS_ToBool(ctx, jv)) {
+            resume = true ;
+            mask |= Timeline::ACTION_RESUME ;
+        }
+        JS_FreeValue(ctx, jv) ;
+
+        jv = JS_GetPropertyStr(ctx, jact, "label") ;
+        if(JS_IsString(jv)) {
+            const char * s = JS_ToCString(ctx, jv) ;
+            if(s) {
+                label = s ;
+                JS_FreeCString(ctx, s) ;
+            }
+            mask |= Timeline::ACTION_LABEL ;
+        }
+        JS_FreeValue(ctx, jv) ;
+
+        if(mask) {
+            timeline->setFrameAction(frame, mask, jumpTo, jumpCount, playTo, playCount, stop, resume, label.c_str()) ;
+        }
+    }
+
+    // 计算 keyframes 中各帧分段下标的最大值（sections 省略时据此推断段数）
+    static uint32_t maxSectionIndex(JSContext *ctx, JSValueConst kfs) {
+        uint32_t maxSi = 0 ;
+        JSPropertyEnum * fptab = nullptr ;
+        uint32_t fplen = 0 ;
+        if(JS_GetOwnPropertyNames(ctx, &fptab, &fplen, kfs, JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY)!=0) {
+            return 0 ;
+        }
+        for(uint32_t i=0; i<fplen; i++) {
+            JSValue secMap = JS_GetProperty(ctx, kfs, fptab[i].atom) ;
+            if(JS_IsObject(secMap)) {
+                JSPropertyEnum * sptab = nullptr ;
+                uint32_t splen = 0 ;
+                if(JS_GetOwnPropertyNames(ctx, &sptab, &splen, secMap, JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY)==0) {
+                    for(uint32_t j=0; j<splen; j++) {
+                        const char * key = JS_AtomToCString(ctx, sptab[j].atom) ;
+                        if(key) {
+                            uint32_t si = (uint32_t)strtoul(key, nullptr, 10) ;
+                            if(si>maxSi) {
+                                maxSi = si ;
+                            }
+                            JS_FreeCString(ctx, key) ;
+                        }
+                        JS_FreeAtom(ctx, sptab[j].atom) ;
+                    }
+                    js_free(ctx, sptab) ;
+                }
+            }
+            JS_FreeValue(ctx, secMap) ;
+            JS_FreeAtom(ctx, fptab[i].atom) ;
+        }
+        js_free(ctx, fptab) ;
+        return maxSi ;
     }
 
     /**
      * 导入配置
      *
-     * 应用 exportConfig() 产出的配置对象：重建 strip 驱动层配置、
-     * 更新时间线参数（fps/frames/repeat）、替换全部分段、恢复全部关键帧
-     * （仅当配置含关键帧时才创建时间线），最后绘制一帧。
+     * 应用 exportConfig() 产出的配置对象：更新时间线参数（fps/frames/repeat）、
+     * 替换全部分段（sections 可省略，按 keyframes 最大分段下标推断段数）、
+     * 恢复全部关键帧（按帧聚合；帧 0 基准值直落成员，非 0 帧为间补目标值，
+     * 仅当存在非 0 关键帧或帧动作时才创建时间线），最后绘制一帧。
+     * 驱动层 strip 配置不在 config 内，由 strip.setup() 单独维护。
      *
      * @component beshell-drv-ws2812b
      *
@@ -735,18 +904,8 @@ namespace be::driver::ws2812b{
         double dtmp ;
         int64_t itmp ;
 
-        // 1. strip 驱动层配置
-        v = JS_GetPropertyStr(ctx, argv[0], "strip") ;
-        if(JS_IsObject(v)) {
-            Strip * strip = (Strip*) NativeClass::fromJS(that->stripObj) ;
-            if(strip) {
-                strip->importConfig(v) ;
-            }
-        }
-        JS_FreeValue(ctx, v) ;
-
-        // 2. 更新时间线参数（fps/frames/repeat 缺省沿用当前值）并销毁旧时间线；
-        //    新时间线仅在存在关键帧时创建
+        // 1. 更新时间线参数（fps/frames/repeat 缺省沿用当前值）并销毁旧时间线；
+        //    新时间线仅在存在非 0 关键帧或帧动作时创建
         v = JS_GetPropertyStr(ctx, argv[0], "fps") ;
         if(JS_IsNumber(v) && JS_ToFloat64(ctx, &dtmp, v)==0 && dtmp>0) {
             that->tlFps = dtmp ;
@@ -769,7 +928,11 @@ namespace be::driver::ws2812b{
         JS_FreeValue(ctx, v) ;
         that->destroyTimeline() ;
 
-        // 3. 替换全部分段
+        // 2. 关键帧对象（可缺省）：先取引用，供推断段数与恢复用
+        JSValue kfs = JS_GetPropertyStr(ctx, argv[0], "keyframes") ;
+        bool hasKfs = JS_IsObject(kfs) ;
+
+        // 3. 替换全部分段：sections 存在取其 length；否则按 keyframes 最大分段下标 +1 推断
         for(auto & secObj : that->sections) {
             Section * sec = (Section*) NativeClass::fromJS(secObj) ;
             if(sec) {
@@ -780,13 +943,14 @@ namespace be::driver::ws2812b{
         }
         that->sections.clear() ;
         Strip * strip = (Strip*) NativeClass::fromJS(that->stripObj) ;
+
+        uint32_t secCount = 1 ;
         v = JS_GetPropertyStr(ctx, argv[0], "sections") ;
         if(JS_IsArray(ctx, v)) {
             JSValue jslen = JS_GetPropertyStr(ctx, v, "length") ;
-            uint32_t count = 0 ;
-            JS_ToUint32(ctx, &count, jslen) ;
+            JS_ToUint32(ctx, &secCount, jslen) ;
             JS_FreeValue(ctx, jslen) ;
-            for(uint32_t i=0; i<count; i++) {
+            for(uint32_t i=0; i<secCount; i++) {
                 JSValue secCfg = JS_GetPropertyUint32(ctx, v, i) ;
                 Section * sec = new Section(ctx, JS_NULL) ;
                 sec->shared() ;
@@ -796,30 +960,70 @@ namespace be::driver::ws2812b{
                 that->sections.push_back(sec->jsobj) ;      // 转移 build() 的计数所有权，不再 DupValue（避免泄漏）
                 JS_FreeValue(ctx, secCfg) ;
             }
+        } else {
+            if(hasKfs) {
+                secCount = maxSectionIndex(ctx, kfs) + 1 ;
+            }
+            for(uint32_t i=0; i<secCount; i++) {
+                Section * sec = new Section(ctx, JS_NULL) ;
+                sec->shared() ;
+                sec->strip = strip ;
+                sec->rainbowObj = that->jsobj ;             // 弱引用（不 DupValue，避免循环引用）
+                that->sections.push_back(sec->jsobj) ;      // 转移 build() 的计数所有权
+            }
         }
         JS_FreeValue(ctx, v) ;
 
-        // 4. 恢复关键帧（有内容时才创建时间线）
-        v = JS_GetPropertyStr(ctx, argv[0], "keyframes") ;
-        if(JS_IsArray(ctx, v)) {
-            JSValue jslen = JS_GetPropertyStr(ctx, v, "length") ;
-            uint32_t count = 0 ;
-            JS_ToUint32(ctx, &count, jslen) ;
-            JS_FreeValue(ctx, jslen) ;
-            if(count>0) {
-                that->ensureTimeline() ;
-            }
-            for(uint32_t i=0; i<count; i++) {
-                JSValue jkf = JS_GetPropertyUint32(ctx, v, i) ;
-                if(JS_IsObject(jkf)) {
-                    that->restoreKeyframe(jkf) ;
+        // 4. 恢复关键帧（按帧聚合 { [frame]: { [si]: { [prop]: 值|三元组 } } }）。
+        //    先处理帧 0（基准值直落成员），再处理其余帧（间补目标值，ensureOrigin 据此捕获正确基准）。
+        if(hasKfs) {
+            JSPropertyEnum * fptab = nullptr ;
+            uint32_t fplen = 0 ;
+            if(JS_GetOwnPropertyNames(ctx, &fptab, &fplen, kfs, JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY)==0) {
+                // 第一遍：帧 0（基准值）
+                for(uint32_t i=0; i<fplen; i++) {
+                    const char * fkey = JS_AtomToCString(ctx, fptab[i].atom) ;
+                    uint32_t frame = 0 ;
+                    if(fkey) {
+                        frame = (uint32_t)strtoul(fkey, nullptr, 10) ;
+                        JS_FreeCString(ctx, fkey) ;
+                    }
+                    if(frame!=0) {
+                        continue ;
+                    }
+                    JSValue secMap = JS_GetProperty(ctx, kfs, fptab[i].atom) ;
+                    if(JS_IsObject(secMap)) {
+                        that->restoreFramePropsMap(0, secMap) ;
+                    }
+                    JS_FreeValue(ctx, secMap) ;
                 }
-                JS_FreeValue(ctx, jkf) ;
+                // 第二遍：帧 > 0（间补目标值）
+                for(uint32_t i=0; i<fplen; i++) {
+                    const char * fkey = JS_AtomToCString(ctx, fptab[i].atom) ;
+                    uint32_t frame = 0 ;
+                    if(fkey) {
+                        frame = (uint32_t)strtoul(fkey, nullptr, 10) ;
+                        JS_FreeCString(ctx, fkey) ;
+                    }
+                    if(frame==0) {
+                        continue ;
+                    }
+                    that->ensureTimeline() ;
+                    JSValue secMap = JS_GetProperty(ctx, kfs, fptab[i].atom) ;
+                    if(JS_IsObject(secMap)) {
+                        that->restoreFramePropsMap(frame, secMap) ;
+                    }
+                    JS_FreeValue(ctx, secMap) ;
+                }
+                for(uint32_t i=0; i<fplen; i++) {
+                    JS_FreeAtom(ctx, fptab[i].atom) ;
+                }
+                js_free(ctx, fptab) ;
             }
         }
-        JS_FreeValue(ctx, v) ;
+        JS_FreeValue(ctx, kfs) ;
 
-        // 4b. 恢复帧动作（jumpTo/playTo；有帧动作时也需创建时间线）
+        // 5. 恢复帧动作（jumpTo/playTo；有帧动作时也需创建时间线）
         v = JS_GetPropertyStr(ctx, argv[0], "frameActions") ;
         if(JS_IsArray(ctx, v)) {
             JSValue jslen = JS_GetPropertyStr(ctx, v, "length") ;
@@ -839,7 +1043,7 @@ namespace be::driver::ws2812b{
         }
         JS_FreeValue(ctx, v) ;
 
-        // 5. 初始绘制
+        // 6. 初始绘制
         that->redraw() ;
 
         return JS_UNDEFINED ;

@@ -422,9 +422,9 @@ namespace be::driver::ws2812b{
 
     JSValue Strip::exportConfig() {
         JSValue obj = JS_NewObject(ctx) ;
-        JS_SetPropertyStr(ctx, obj, "pin", JS_NewInt32(ctx, (int32_t)pin)) ;
-        JS_SetPropertyStr(ctx, obj, "length", JS_NewInt32(ctx, length)) ;
-        JS_SetPropertyStr(ctx, obj, "loop", JS_NewBool(ctx, loop)) ;
+        if(pin >= 0) JS_SetPropertyStr(ctx, obj, "pin", JS_NewInt32(ctx, (int32_t)pin)) ;
+        if(length > 0) JS_SetPropertyStr(ctx, obj, "length", JS_NewInt32(ctx, length)) ;
+        if(loop) JS_SetPropertyStr(ctx, obj, "loop", JS_NewBool(ctx, loop)) ;
         return obj ;
     }
 

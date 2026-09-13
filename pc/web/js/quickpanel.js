@@ -2,7 +2,7 @@
 // 复制侧边栏该端点色行的完整编辑控件与三列布局：
 // 色块（点击弹出取色器，不直接显示色盘）+ H/S/V 数值 + 过渡/间补缓动 + 启用/色相逆时针。
 import {
-    ENDPOINTS, evalProp, setKeyframe, keyframeAt, setKeyframeEase,
+    ENDPOINTS, evalProp, setKeyframe, keyframeAt, setKeyframeEase, normalizeInputText,
 } from './model.js';
 import { EaseMenu } from './easemenu.js';
 import { HSVPicker } from './hsvpicker.js';
@@ -25,6 +25,7 @@ export class QuickPanel {
         this._easeSMap = {};             // easeProp -> easeSProp
         this._colorBtn = null;           // 色块按钮
         this._ccwInput = null;           // 色相逆时针 checkbox
+        this._editFrame = null;          // 值输入框聚焦时捕获的帧号（change 在 blur 时触发，可能已 scrub 到别的帧）
         this._build();
     }
 
@@ -188,8 +189,11 @@ export class QuickPanel {
         if (opts.min !== undefined) inp.min = opts.min;
         if (opts.max !== undefined) inp.max = opts.max;
         inp.className = 'sb-val-input';
+        // 聚焦时记住当前帧：change 在 blur 时触发，时间轴在 mousedown 已 scrub 到新帧，
+        // 若按提交时的帧号写入会误改关键帧，故按聚焦时的帧号提交。
+        inp.addEventListener('focus', () => { this._editFrame = this.getState().frame; });
         inp.addEventListener('change', () => {
-            const v = parseFloat(inp.value);
+            const v = parseFloat(normalizeInputText(inp.value));
             if (isNaN(v)) { this.sync(); return; }
             this._writeKeyframe(opts.prop, v);
         });
@@ -367,7 +371,7 @@ export class QuickPanel {
     _writeKeyframe(prop, value) {
         const sec = this._sec();
         if (!sec) return;
-        const frame = this.getState().frame;
+        const frame = (this._editFrame != null) ? this._editFrame : this.getState().frame;
         const existing = keyframeAt(sec, prop, frame);
         setKeyframe(sec, prop, frame, value, existing ? existing.ease : 'linear', existing ? existing.easeS : 1.70158);
         this.sync();

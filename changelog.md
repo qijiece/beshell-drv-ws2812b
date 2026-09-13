@@ -9,7 +9,7 @@ New Feature :
 * `Strip` 新增 `loop` 回环字段（setup 配置或 loop 属性），回环模式下像素索引取模回卷、非回环裁剪；新增 `setPixelHSV`（C++ 侧 HSV→RGB）；setup 可重复调用；新增 `exportConfig()/importConfig()` 配置导入导出
 * `Strip` 新增与 JS 侧同名的 C++ 实例绘制方法 `setPixel/setPixelHSV/clear/flush`
 * 新增 `ws2812b` 模块入口类 `WS2812B`（`beshell.use<WS2812B>()` 级联注册 Strip/Section/Rainbow），JS 胶水层将三个类转挂到 ws2812b 模块，并导出 `hsv2rgb(h,s,v)` 函数
-* `Rainbow`/`Section` 支持 `exportConfig()/importConfig()` 整体导入导出（含 strip 驱动层配置、分段、时间线关键帧；关键帧 `time` 字段为毫秒），供编辑器使用
+* `Rainbow`/`Section` 支持 `exportConfig()/importConfig()` 整体导入导出（config 只含动画：分段静态配置 + 按帧号聚合的关键帧（帧 0 为各分段基准值，非 0 帧为单值或 [值,缓动,缓动s?]）；strip 驱动层配置不在 config 内，由 `strip.setup()` 单独维护），供编辑器使用
 * `sec.set` 属性表形式支持表级 `ease`/`easeS` 键，作为该帧全部属性的默认缓动（如 `{ x: 16, ease: "linear" }`），数组形式 `[value, easeName, easeS]` 可单独覆盖
 * `Section` 新增 `h_ccw` 属性指定主体内 h0→h1 的色相过渡方向（默认顺时针即色相增大方向，h_ccw=true 为逆时针）；h0/h1 允许超出 0-360（可为负或多圈值，显示时对 360 取模）表达跨圈/多圈过渡（如 h0=0、h1=360 走整圈彩虹）；关键帧驱动 h0/h1 时同样生效（如 0→720 表示随时间顺时针绕两圈）
 
