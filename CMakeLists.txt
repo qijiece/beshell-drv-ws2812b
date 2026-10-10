@@ -16,6 +16,7 @@ idf_component_register(
             ./src
         PRIV_REQUIRES
             beshell
+            esp_driver_rmt
 )
 
 target_include_directories(${COMPONENT_LIB} PRIVATE src/beshell-drv-ws2812b)

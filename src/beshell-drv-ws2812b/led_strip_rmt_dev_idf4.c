@@ -8,13 +8,13 @@
 #include <sys/cdefs.h>
 #include "esp_log.h"
 #include "esp_check.h"
-#include "driver/rmt.h"
 #include "led_strip.h"
 #include "led_strip_interface.h"
 
 static const char *TAG = "led_strip_rmt";
 
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+#include "driver/rmt.h"
 
 
 #define WS2812_T0H_NS   (300)
